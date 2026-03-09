@@ -1,63 +1,54 @@
-name: 每日股票分析
+name: 股票深度分析任务
 
 on:
-  schedule:
-    - cron: '0 10 * * 1-5'     # 北京时间 18:00
+  # 允许手动触发并接收参数
   workflow_dispatch:
-   inputs:
+    inputs:
       stock_code:
-        description: '股票代码'
+        description: '股票代码 (必填)'
         required: true
+        default: '000001'
       cost_price:
-        description: '买入成本'
+        description: '买入成本 (可选，用于私人分析)'
         required: false
         default: '0'
       position_ratio:
-        description: '持仓比例'
+        description: '持仓比例 (可选，用于风险评估)'
         required: false
         default: '0'
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    env:
-      # 💡 核心修复：全局同步为北京时间
-      TZ: Asia/Shanghai 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-      - name: 设置 Python
+
+      - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
           cache: 'pip'
+
       - name: 安装依赖
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          mkdir -p logs reports
 
       - name: 执行股票分析
         env:
-          # 保留你所有的 API Key 环境变量
+          # 确保这些 Secret 已经在 GitHub 仓库的 Settings -> Secrets 中配好
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          STOCK_LIST: ${{ github.event.inputs.stock_code || vars.STOCK_LIST || '600519' }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GHP_TOKEN: ${{ secrets.GHP_TOKEN }}
+          SILICON_FLOW_KEY: ${{ secrets.SILICON_FLOW_KEY }}
+          TZ: Asia/Shanghai
         run: |
-          # 1. 自动判断是否需要强制运行（只要是你手动输入的代码，就强行查）
-          FORCE_ARG=""
-          if [ -n "${{ github.event.inputs.stock_code }}" ] || [ "${{ github.event.inputs.force_run }}" = "true" ]; then
-            FORCE_ARG="--force-run"
-          fi
-
-          # 2. 运行脚本并捕获输出
-          echo "🚀 启动时间: $(date)"
-          OUTPUT=$(python main.py $FORCE_ARG --no-market-review 2>&1)
-          echo "$OUTPUT"
-
-          # 3. 💡 增加反馈逻辑：如果日志里说跳过执行，发个消息给 TG
-          if echo "$OUTPUT" | grep -q "跳过执行"; then
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${TELEGRAM_CHAT_ID}" \
-              -d "text=😴 报告老板：今日为非交易日，系统已自动进入休眠模式。若需查看分析，请在刚才的指令后加上 --force-run"
-          fi
+          # 💡 关键点：将传入的参数准确传给 main.py
+          python main.py \
+            --stocks "${{ github.event.inputs.stock_code }}" \
+            --cost-price "${{ github.event.inputs.cost_price }}" \
+            --position-ratio "${{ github.event.inputs.position_ratio }}" \
+            --force-run \
+            --single-notify
