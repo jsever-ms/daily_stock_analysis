@@ -1008,7 +1008,12 @@ class StockAnalysisPipeline:
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
                 ): code
-                for code in stock_codes
+                for code in stock_codes:
+                result = self.analyzer.analyze(
+                    context=context,
+                    news_context=news_context,
+                    cost_price=cost_price,
+                    position_ratio=position_ratio
             }
             
             # 收集结果
