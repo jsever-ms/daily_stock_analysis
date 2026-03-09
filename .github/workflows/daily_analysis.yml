@@ -4,14 +4,18 @@ on:
   schedule:
     - cron: '0 10 * * 1-5'     # 北京时间 18:00
   workflow_dispatch:
-    inputs:
+   inputs:
       stock_code:
         description: '股票代码'
+        required: true
+      cost_price:
+        description: '买入成本'
         required: false
-      force_run:
-        description: '强制运行'
+        default: '0'
+      position_ratio:
+        description: '持仓比例'
         required: false
-        default: true          # ⬅️ 设为 true，以后你手动查，默认就强行查
+        default: '0'
 
 jobs:
   analyze:
