@@ -997,7 +997,7 @@ class StockAnalysisPipeline:
         
         # 使用线程池并发处理
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # 提交任务
             future_to_code = {
                 executor.submit(
@@ -1005,15 +1005,13 @@ class StockAnalysisPipeline:
                     code,
                     skip_analysis=dry_run,
                     single_stock_notify=single_stock_notify and send_notification,
-                    report_type=report_type,  # Issue #119: 传递报告类型
+                    report_type=report_type,
                     analysis_query_id=uuid.uuid4().hex,
+                    # ⬅️ 在这里把参数传进去
+                    cost_price=cost_price,        
+                    position_ratio=position_ratio 
                 ): code
-                for code in stock_codes:
-                result = self.analyzer.analyze(
-                    context=context,
-                    news_context=news_context,
-                    cost_price=cost_price,
-                    position_ratio=position_ratio
+                for code in stock_codes
             }
             
             # 收集结果
