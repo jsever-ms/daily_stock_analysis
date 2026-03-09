@@ -890,7 +890,7 @@ def _format_prompt(self, context, name, news_context, cost_price=0, position_rat
             prompt += "未搜索到近期相关新闻。\n"
 
         prompt += "\n请严格按照 JSON 格式输出完整的【决策仪表盘】。"
-        return prompt
+
 
 ## 📊 股票基础信息
 | 项目 | 数据 |
