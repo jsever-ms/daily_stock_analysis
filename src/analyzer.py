@@ -729,7 +729,6 @@ class GeminiAnalyzer:
         2. 调用 Gemini API（带重试和模型切换）
         3. 解析 JSON 响应
         4. 返回结构化结果
-        prompt = self._format_prompt(context, name, news_context, cost_price, position_ratio)
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
@@ -774,7 +773,7 @@ class GeminiAnalyzer:
         
         try:
             # 格式化输入（包含技术面数据和新闻）
-            prompt = self._format_prompt(context, name, news_context)
+            prompt = self._format_prompt(context, name, news_context, cost_price, position_ratio)
             
             config = get_config()
             model_name = config.litellm_model or "unknown"
@@ -838,9 +837,10 @@ class GeminiAnalyzer:
     
 def _format_prompt(self, context, name, news_context, cost_price=0, position_ratio=0) -> str:
         """
-        格式化分析提示词（决策仪表盘 v2.0 - 私人定制版）
+        格式化分析提示词（决策仪表盘 v2.0 - 私人定制硬核版）
         包含：技术指标、实时行情、筹码分布、趋势分析、新闻及私人持仓诊断
         """
+        # 1. 基础信息识别 [cite: 71, 141]
         code = context.get('code', 'Unknown')
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
@@ -848,49 +848,8 @@ def _format_prompt(self, context, name, news_context, cost_price=0, position_rat
             
         today = context.get('today', {})
         
-        # 1. 基础信息与私人持仓模块
-        prompt = f"# 决策仪表盘分析请求\n\n## 📊 股票基础信息\n- 代码: **{code}** / 名称: **{stock_name}**\n- 分析日期: {context.get('date', '未知')}\n"
-        
-        if float(cost_price) > 0:
-            prompt += f"""
----
-## 👤 私人持仓诊断 (重点关注)
-| 项目 | 数据 |
-|------|------|
-| **我的买入成本** | **{cost_price} 元** |
-| **我的持仓比例** | **{position_ratio}%** |
-
-**⚠️ 任务：请结合上述个人成本，计算当前盈亏比例，并在报告中给出量身定制的操作策略。**
-"""
-
-        # 2. 技术面核心数据 [cite: 157-162]
-        prompt += f"""
----
-## 📈 技术面数据
-### 今日行情
-- 收盘价: {today.get('close', 'N/A')} / 涨跌幅: {today.get('pct_chg', 'N/A')}%
-- 均线系统: MA5({today.get('ma5', 'N/A')}), MA10({today.get('ma10', 'N/A')}), MA20({today.get('ma20', 'N/A')})
-- 均线形态: {context.get('ma_status', '未知')}
-"""
-
-        # 3. 实时与筹码增强数据 [cite: 163-169]
-        if 'realtime' in context:
-            rt = context['realtime']
-            prompt += f"\n### 实时增强\n- 量比: {rt.get('volume_ratio', 'N/A')} / 换手率: {rt.get('turnover_rate', 'N/A')}%\n"
-            
-        if 'chip' in context:
-            chip = context['chip']
-            prompt += f"\n### 筹码分布\n- 获利比例: {chip.get('profit_ratio', 0):.1%} / 平均成本: {chip.get('avg_cost', 'N/A')}\n"
-
-        # 4. 舆情情报 [cite: 174]
-        prompt += "\n---\n## 📰 舆情情报\n"
-        if news_context:
-            prompt += f"以下是近7日新闻摘要：\n{news_context}\n"
-        else:
-            prompt += "未搜索到近期相关新闻。\n"
-
-        prompt += "\n请严格按照 JSON 格式输出完整的【决策仪表盘】。"
-
+        # 2. 开始构建核心 Prompt 字符串 [cite: 154]
+        prompt = f"""# 决策仪表盘分析请求
 
 ## 📊 股票基础信息
 | 项目 | 数据 |
@@ -898,17 +857,30 @@ def _format_prompt(self, context, name, news_context, cost_price=0, position_rat
 | 股票代码 | **{code}** |
 | 股票名称 | **{stock_name}** |
 | 分析日期 | {context.get('date', '未知')} |
+"""
 
+        # 3. 注入私人持仓诊断（只有成本 > 0 时才开启） [cite: 93, 155, 156]
+        try:
+            c_price = float(cost_price)
+            p_ratio = float(position_ratio)
+        except (ValueError, TypeError):
+            c_price, p_ratio = 0.0, 0.0
+
+        if c_price > 0:
+            prompt += f"""
 ---
+## 👤 [私人投顾模式] 个人持仓诊断
+| 项目 | 数据 |
+|------|------|
+| **我的买入成本** | **{c_price} 元** |
+| **我的持仓比例** | **{p_ratio}%** |
 
-# ========== 添加用户持仓信息 (私人投顾模式) ==========
-        cost_price = context.get('cost_price', 0)
-        position_ratio = context.get('position_ratio', 0)
-        
-        # 只有当成本大于 0 时才显示此模块
-       if float(cost_price) > 0:
-           prompt += f"\n---\n## [私人投顾建议]\n- 您的成本: {cost_price} 元\n- 您的仓位: {position_ratio}%\n请结合当前市价计算盈亏，并给出专属操作建议。"
+**⚠️ 任务：请务必结合我的买入成本计算盈亏，并在报告中给出量身定制的操作策略（如：是否建议补仓、离回本还差多少等）。**
+"""
 
+        # 4. 技术面核心数据（行情+均线） [cite: 157, 161, 164, 165]
+        prompt += f"""
+---
 ## 📈 技术面数据
 
 ### 今日行情
@@ -922,150 +894,75 @@ def _format_prompt(self, context, name, news_context, cost_price=0, position_rat
 | 成交量 | {self._format_volume(today.get('volume'))} |
 | 成交额 | {self._format_amount(today.get('amount'))} |
 
-### 均线系统（关键判断指标）
+### 均线系统（趋势判断）
 | 均线 | 数值 | 说明 |
 |------|------|------|
-| MA5 | {today.get('ma5', 'N/A')} | 短期趋势线 |
-| MA10 | {today.get('ma10', 'N/A')} | 中短期趋势线 |
-| MA20 | {today.get('ma20', 'N/A')} | 中期趋势线 |
-| 均线形态 | {context.get('ma_status', '未知')} | 多头/空头/缠绕 |
+| MA5 | {today.get('ma5', 'N/A')} | 短期趋势 |
+| MA10 | {today.get('ma10', 'N/A')} | 中短期趋势 |
+| MA20 | {today.get('ma20', 'N/A')} | 中期趋势 |
+| 均线形态 | {context.get('ma_status', '未知')} | 趋势方向 |
 """
-        
-        # 添加实时行情数据（量比、换手率等）
+
+        # 5. 实时行情与筹码分布 [cite: 167, 171, 172]
         if 'realtime' in context:
             rt = context['realtime']
             prompt += f"""
-### 实时行情增强数据
+### 实时行情增强
 | 指标 | 数值 | 解读 |
 |------|------|------|
-| 当前价格 | {rt.get('price', 'N/A')} 元 | |
 | **量比** | **{rt.get('volume_ratio', 'N/A')}** | {rt.get('volume_ratio_desc', '')} |
-| **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | |
-| 市盈率(动态) | {rt.get('pe_ratio', 'N/A')} | |
-| 市净率 | {rt.get('pb_ratio', 'N/A')} | |
-| 总市值 | {self._format_amount(rt.get('total_mv'))} | |
-| 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
-| 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
+| **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | 活跃度 |
+| 市盈率(动) | {rt.get('pe_ratio', 'N/A')} | 估值状态 |
 """
-        
-        # 添加筹码分布数据
+
         if 'chip' in context:
             chip = context['chip']
-            profit_ratio = chip.get('profit_ratio', 0)
             prompt += f"""
-### 筹码分布数据（效率指标）
+### 筹码分布（效率指标）
 | 指标 | 数值 | 健康标准 |
 |------|------|----------|
-| **获利比例** | **{profit_ratio:.1%}** | 70-90%时警惕 |
-| 平均成本 | {chip.get('avg_cost', 'N/A')} 元 | 现价应高于5-15% |
-| 90%筹码集中度 | {chip.get('concentration_90', 0):.2%} | <15%为集中 |
-| 70%筹码集中度 | {chip.get('concentration_70', 0):.2%} | |
-| 筹码状态 | {chip.get('chip_status', '未知')} | |
+| **获利比例** | **{chip.get('profit_ratio', 0):.1%}** | 70-90%警惕 |
+| 平均成本 | {chip.get('avg_cost', 'N/A')} 元 | 支撑位参考 |
+| 筹码状态 | {chip.get('chip_status', '未知')} | 筹码结构 |
 """
-        
-        # 添加趋势分析结果（基于交易理念的预判）
+
+        # 6. 趋势分析预判 [cite: 174, 175, 177]
         if 'trend_analysis' in context:
             trend = context['trend_analysis']
-            bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
+            bias_val = trend.get('bias_ma5', 0)
+            bias_warning = "🚨 超过5%，严禁追高！" if bias_val > 5 else "✅ 安全范围"
+            
             prompt += f"""
-### 趋势分析预判（基于交易理念）
-| 指标 | 数值 | 判定 |
-|------|------|------|
-| 趋势状态 | {trend.get('trend_status', '未知')} | |
-| 均线排列 | {trend.get('ma_alignment', '未知')} | MA5>MA10>MA20为多头 |
-| 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
-| **乖离率(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
-| 乖离率(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
-| 量能状态 | {trend.get('volume_status', '未知')} | {trend.get('volume_trend', '')} |
-| 系统信号 | {trend.get('buy_signal', '未知')} | |
-| 系统评分 | {trend.get('signal_score', 0)}/100 | |
+### 趋势分析预判
+- 均线排列: {trend.get('ma_alignment', '未知')}
+- **乖离率(MA5)**: **{bias_val:+.2f}%** ({bias_warning})
+- 系统评分: {trend.get('signal_score', 0)}/100
 
-#### 系统分析理由
-**买入理由**：
-{chr(10).join('- ' + r for r in trend.get('signal_reasons', ['无'])) if trend.get('signal_reasons') else '- 无'}
+#### 分析理由：
+{chr(10).join('- ' + r for r in trend.get('signal_reasons', ['无']))}
+"""
 
-**风险因素**：
-{chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
-"""
-        
-        # 添加昨日对比数据
-        if 'yesterday' in context:
-            volume_change = context.get('volume_change_ratio', 'N/A')
-            prompt += f"""
-### 量价变化
-- 成交量较昨日变化：{volume_change}倍
-- 价格较昨日变化：{context.get('price_change_ratio', 'N/A')}%
-"""
-        
-        # 添加新闻搜索结果（重点区域）
-        prompt += """
----
-
-## 📰 舆情情报
-"""
+        # 7. 舆情情报 [cite: 178]
+        prompt += "\n---\n## 📰 舆情情报\n"
         if news_context:
-            prompt += f"""
-以下是 **{stock_name}({code})** 近7日的新闻搜索结果，请重点提取：
-1. 🚨 **风险警报**：减持、处罚、利空
-2. 🎯 **利好催化**：业绩、合同、政策
-3. 📊 **业绩预期**：年报预告、业绩快报
-
-```
-{news_context}
-```
-"""
+            prompt += f"以下是近7日新闻结果：\n```\n{news_context}\n```\n"
         else:
-            prompt += """
-未搜索到该股票近期的相关新闻。请主要依据技术面数据进行分析。
-"""
+            prompt += "未发现近期重大新闻，主要参考技术面。\n"
 
-        # 注入缺失数据警告
+        # 8. 缺失数据与输出指令 [cite: 179, 180]
         if context.get('data_missing'):
-            prompt += """
-⚠️ **数据缺失警告**
-由于接口限制，当前无法获取完整的实时行情和技术指标数据。
-请 **忽略上述表格中的 N/A 数据**，重点依据 **【📰 舆情情报】** 中的新闻进行基本面和情绪面分析。
-在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
-"""
+            prompt += "\n⚠️ **警告**：部分实时数据缺失，请重点依据舆情情报分析，严禁编造数据。\n"
 
-        # 明确的输出要求
         prompt += f"""
 ---
-
 ## ✅ 分析任务
-
-请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
+请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按 JSON 格式输出。
+重点回答：
+1. 均线是否多头排列？
+2. 乖离率是否安全（<5%）？
+3. 量能与筹码是否健康？
+4. **私人建议**：结合成本 {c_price} 给出的具体方案。
 """
-        if context.get('is_index_etf'):
-            prompt += """
-> ⚠️ **指数/ETF 分析约束**：该标的为指数跟踪型 ETF 或市场指数。
-> - 风险分析仅关注：**指数走势、跟踪误差、市场流动性**
-> - 严禁将基金公司的诉讼、声誉、高管变动纳入风险警报
-> - 业绩预期基于**指数成分股整体表现**，而非基金公司财报
-> - `risk_alerts` 中不得出现基金管理人相关的公司经营风险
-
-"""
-        prompt += f"""
-### ⚠️ 重要：输出正确的股票名称格式
-正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
-如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
-
-### 重点关注（必须明确回答）：
-1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
-2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
-3. ❓ 量能是否配合（缩量回调/放量突破）？
-4. ❓ 筹码结构是否健康？
-5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
-
-### 决策仪表盘要求：
-- **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
-- **核心结论**：一句话说清该买/该卖/该等
-- **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
-- **具体狙击点位**：买入价、止损价、目标价（精确到分）
-- **检查清单**：每项用 ✅/⚠️/❌ 标记
-
-请输出完整的 JSON 格式决策仪表盘。"""
-        
         return prompt
     
     def _format_volume(self, volume: Optional[float]) -> str:
