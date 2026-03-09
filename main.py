@@ -89,6 +89,19 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
     )
+    parser.add_argument(
+        '--cost-price',
+        type=float,
+        default=0.0,
+        help='买入成本价'
+    )
+
+    parser.add_argument(
+        '--position-ratio',
+        type=float,
+        default=0.0,
+        help='持仓比例（百分比）'
+    )
 
     parser.add_argument(
         '--no-notify',
@@ -315,7 +328,9 @@ def run_full_analysis(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
             send_notification=not args.no_notify,
-            merge_notification=merge_notification
+            merge_notification=merge_notification,
+            cost_price=getattr(args, 'cost_price', 0.0),
+            position_ratio=getattr(args, 'position_ratio', 0.0)
         )
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
