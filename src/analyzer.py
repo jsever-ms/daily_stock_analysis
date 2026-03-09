@@ -717,7 +717,9 @@ class GeminiAnalyzer:
     def analyze(
         self, 
         context: Dict[str, Any],
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -727,7 +729,7 @@ class GeminiAnalyzer:
         2. 调用 Gemini API（带重试和模型切换）
         3. 解析 JSON 响应
         4. 返回结构化结果
-        
+        prompt = self._format_prompt(context, name, news_context, cost_price, position_ratio)
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
@@ -834,12 +836,8 @@ class GeminiAnalyzer:
                 model_used=None,
             )
     
-    def _format_prompt(
-        self, 
-        context: Dict[str, Any], 
-        name: str,
-        news_context: Optional[str] = None
-    ) -> str:
+def _format_prompt(self, context, name, news_context, cost_price, position_ratio) -> str:
+    prompt = f"# 股票深度分析: {name}({context.get('code')})\n"
         """
         格式化分析提示词（决策仪表盘 v2.0）
         
