@@ -876,18 +876,8 @@ class GeminiAnalyzer:
         position_ratio = context.get('position_ratio', 0)
         
         # 只有当成本大于 0 时才显示此模块
-        if cost_price and float(cost_price) > 0:
-            prompt += f"""
----
-
-## 👤 用户持仓信息 (私人投顾模式)
-| 项目 | 数据 |
-|------|------|
-| **我的买入成本** | **{cost_price} 元** |
-| **我的持仓比例** | **{position_ratio}%** |
-
-**任务要求：请务必结合上述个人持仓数据进行盈亏分析，并在【决策仪表盘】的持仓建议中给出量身定制的操作方案。**
-"""
+       if float(cost_price) > 0:
+            prompt += f"\n---\n## 👤 个人持仓诊断\n- 买入成本: {cost_price} 元\n- 持仓比例: {position_ratio}%\n要求：请结合此成本计算盈亏，并给出针对性的操作建议。"
 
 ## 📈 技术面数据
 
