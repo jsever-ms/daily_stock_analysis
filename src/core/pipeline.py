@@ -1031,32 +1031,32 @@ with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
 # 统计
 elapsed_time = time.time() - start_time
         
-        # dry-run 模式下，数据获取成功即视为成功
-        if dry_run:
-            # 检查哪些股票的数据今天已存在
-            success_count = sum(1 for code in stock_codes if self.db.has_today_data(code))
-            fail_count = len(stock_codes) - success_count
-        else:
-            success_count = len(results)
-            fail_count = len(stock_codes) - success_count
-        
-        logger.info("===== 分析完成 =====")
-        logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
-        
-        # 发送通知（单股推送模式下跳过汇总推送，避免重复）
-        if results and send_notification and not dry_run:
-            if single_stock_notify:
-                # 单股推送模式：只保存汇总报告，不再重复推送
-                logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
-                self._send_notifications(results, skip_push=True)
-            elif merge_notification:
-                # 合并模式（Issue #190）：仅保存，不推送，由 main 层合并个股+大盘后统一发送
-                logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
-                self._send_notifications(results, skip_push=True)
-            else:
-                self._send_notifications(results)
-        
-        return results
+# dry-run 模式下，数据获取成功即视为成功
+if dry_run:
+    # 检查哪些股票的数据今天已存在
+    success_count = sum(1 for code in stock_codes if self.db.has_today_data(code))
+    fail_count = len(stock_codes) - success_count
+else:
+    success_count = len(results)
+    fail_count = len(stock_codes) - success_count
+
+logger.info("===== 分析完成 =====")
+logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
+
+# 发送通知（单股推送模式下跳过汇总推送，避免重复）
+if results and send_notification and not dry_run:
+    if single_stock_notify:
+        # 单股推送模式：只保存汇总报告，不再重复推送
+        logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
+        self._send_notifications(results, skip_push=True)
+    elif merge_notification:
+        # 合并模式（Issue #190）：仅保存，不推送，由 main 层合并个股+大盘后统一发送
+        logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
+        self._send_notifications(results, skip_push=True)
+    else:
+        self._send_notifications(results)
+
+return results
     
     def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False) -> None:
         """
