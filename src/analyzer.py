@@ -838,7 +838,7 @@ class GeminiAnalyzer:
     
 def _format_prompt(self, context, name, news_context, cost_price, position_ratio) -> str:
     prompt = f"# 股票深度分析: {name}({context.get('code')})\n"
-        """
+    """
         格式化分析提示词（决策仪表盘 v2.0）
         
         包含：技术指标、实时行情（量比/换手率）、筹码分布、趋势分析、新闻
