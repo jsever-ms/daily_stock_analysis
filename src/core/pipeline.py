@@ -311,7 +311,7 @@ class StockAnalysisPipeline:
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
-            result = self.analyzer.analyze(enhanced_context, news_context=news_context)
+            result = self.analyzer.analyze(enhanced_context, news_context=news_context,cost_price=cost_price, position_ratio=position_ratio)
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:
@@ -933,7 +933,9 @@ class StockAnalysisPipeline:
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
         send_notification: bool = True,
-        merge_notification: bool = False
+        merge_notification: bool = False,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
