@@ -836,29 +836,61 @@ class GeminiAnalyzer:
                 model_used=None,
             )
     
-def _format_prompt(self, context, name, news_context, cost_price, position_ratio) -> str:
-    prompt = f"# 股票深度分析: {name}({context.get('code')})\n"
-    """
-        格式化分析提示词（决策仪表盘 v2.0）
-        
-        包含：技术指标、实时行情（量比/换手率）、筹码分布、趋势分析、新闻
-        
-        Args:
-            context: 技术面数据上下文（包含增强数据）
-            name: 股票名称（默认值，可能被上下文覆盖）
-            news_context: 预先搜索的新闻内容
+def _format_prompt(self, context, name, news_context, cost_price=0, position_ratio=0) -> str:
+        """
+        格式化分析提示词（决策仪表盘 v2.0 - 私人定制版）
+        包含：技术指标、实时行情、筹码分布、趋势分析、新闻及私人持仓诊断
         """
         code = context.get('code', 'Unknown')
-        
-        # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
             stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
             
         today = context.get('today', {})
         
-        # ========== 构建决策仪表盘格式的输入 ==========
-        prompt = f"""# 决策仪表盘分析请求
+        # 1. 基础信息与私人持仓模块
+        prompt = f"# 决策仪表盘分析请求\n\n## 📊 股票基础信息\n- 代码: **{code}** / 名称: **{stock_name}**\n- 分析日期: {context.get('date', '未知')}\n"
+        
+        if float(cost_price) > 0:
+            prompt += f"""
+---
+## 👤 私人持仓诊断 (重点关注)
+| 项目 | 数据 |
+|------|------|
+| **我的买入成本** | **{cost_price} 元** |
+| **我的持仓比例** | **{position_ratio}%** |
+
+**⚠️ 任务：请结合上述个人成本，计算当前盈亏比例，并在报告中给出量身定制的操作策略。**
+"""
+
+        # 2. 技术面核心数据 [cite: 157-162]
+        prompt += f"""
+---
+## 📈 技术面数据
+### 今日行情
+- 收盘价: {today.get('close', 'N/A')} / 涨跌幅: {today.get('pct_chg', 'N/A')}%
+- 均线系统: MA5({today.get('ma5', 'N/A')}), MA10({today.get('ma10', 'N/A')}), MA20({today.get('ma20', 'N/A')})
+- 均线形态: {context.get('ma_status', '未知')}
+"""
+
+        # 3. 实时与筹码增强数据 [cite: 163-169]
+        if 'realtime' in context:
+            rt = context['realtime']
+            prompt += f"\n### 实时增强\n- 量比: {rt.get('volume_ratio', 'N/A')} / 换手率: {rt.get('turnover_rate', 'N/A')}%\n"
+            
+        if 'chip' in context:
+            chip = context['chip']
+            prompt += f"\n### 筹码分布\n- 获利比例: {chip.get('profit_ratio', 0):.1%} / 平均成本: {chip.get('avg_cost', 'N/A')}\n"
+
+        # 4. 舆情情报 [cite: 174]
+        prompt += "\n---\n## 📰 舆情情报\n"
+        if news_context:
+            prompt += f"以下是近7日新闻摘要：\n{news_context}\n"
+        else:
+            prompt += "未搜索到近期相关新闻。\n"
+
+        prompt += "\n请严格按照 JSON 格式输出完整的【决策仪表盘】。"
+        return prompt
 
 ## 📊 股票基础信息
 | 项目 | 数据 |
