@@ -877,7 +877,7 @@ class GeminiAnalyzer:
         
         # 只有当成本大于 0 时才显示此模块
        if float(cost_price) > 0:
-            prompt += f"\n---\n## 👤 个人持仓诊断\n- 买入成本: {cost_price} 元\n- 持仓比例: {position_ratio}%\n要求：请结合此成本计算盈亏，并给出针对性的操作建议。"
+           prompt += f"\n---\n## [私人投顾建议]\n- 您的成本: {cost_price} 元\n- 您的仓位: {position_ratio}%\n请结合当前市价计算盈亏，并给出专属操作建议。"
 
 ## 📈 技术面数据
 
