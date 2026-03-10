@@ -928,108 +928,116 @@ class StockAnalysisPipeline:
             logger.exception(f"[{code}] 处理过程发生未知异常: {e}")
             return None
     
-    def run(
-        self,
-        stock_codes: Optional[List[str]] = None,
-        dry_run: bool = False,
-        send_notification: bool = True,
-        merge_notification: bool = False,
-        cost_price: float = 0.0,
-        position_ratio: float = 0.
-    ) -> List[AnalysisResult]:
-        """
-        运行完整的分析流程
+def run(
+    self,
+    stock_codes: Optional[List[str]] = None,
+    dry_run: bool = False,
+    send_notification: bool = True,
+    merge_notification: bool = False,
+    cost_price: Optional[Dict[str, float]] = None,
+    position_ratio: Optional[Dict[str, float]] = None
+) -> List[AnalysisResult]:
+    """
+    运行完整的分析流程
 
-        流程：
-        1. 获取待分析的股票列表
-        2. 使用线程池并发处理
-        3. 收集分析结果
-        4. 发送通知
+    流程：
+    1. 获取待分析的股票列表
+    2. 使用线程池并发处理
+    3. 收集分析结果
+    4. 发送通知
 
-        Args:
-            stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
-            dry_run: 是否仅获取数据不分析
-            send_notification: 是否发送推送通知
-            merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
+    Args:
+        stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
+        dry_run: 是否仅获取数据不分析
+        send_notification: 是否发送推送通知
+        merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
+        cost_price: 股票成本价字典，格式 {code: price}（可选）
+        position_ratio: 持仓比例字典，格式 {code: ratio}（可选）
 
-        Returns:
-            分析结果列表
-        """
-        start_time = time.time()
-        
-        # 使用配置中的股票列表
-        if stock_codes is None:
-            self.config.refresh_stock_list()
-            stock_codes = self.config.stock_list
-        
-        if not stock_codes:
-            logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
-            return []
-        
-        logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
-        logger.info(f"股票列表: {', '.join(stock_codes)}")
-        logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
-        
-        # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
-        # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
-        if len(stock_codes) >= 5:
-            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
-            if prefetch_count > 0:
-                logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
+    Returns:
+        分析结果列表
+    """
+    start_time = time.time()
+    
+    # 初始化参数
+    if cost_price is None:
+        cost_price = {}
+    if position_ratio is None:
+        position_ratio = {}
+    
+    # 使用配置中的股票列表
+    if stock_codes is None:
+        self.config.refresh_stock_list()
+        stock_codes = self.config.stock_list
+    
+    if not stock_codes:
+        logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
+        return []
+    
+    logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
+    logger.info(f"股票列表: {', '.join(stock_codes)}")
+    logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
+    
+    # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
+    # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
+    if len(stock_codes) >= 5:
+        prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
+        if prefetch_count > 0:
+            logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
 
-        # Issue #455: 预取股票名称，避免并发分析时显示「股票xxxxx」
-        # dry_run 仅做数据拉取，不需要名称预取，避免额外网络开销
-        if not dry_run:
-            self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
+    # Issue #455: 预取股票名称，避免并发分析时显示「股票xxxxx」
+    # dry_run 仅做数据拉取，不需要名称预取，避免额外网络开销
+    if not dry_run:
+        self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
 
-        # 单股推送模式（#55）：从配置读取
-        single_stock_notify = getattr(self.config, 'single_stock_notify', False)
-        # Issue #119: 从配置读取报告类型
-        report_type_str = getattr(self.config, 'report_type', 'simple').lower()
-        report_type = ReportType.FULL if report_type_str == 'full' else ReportType.SIMPLE
-        # Issue #128: 从配置读取分析间隔
-        analysis_delay = getattr(self.config, 'analysis_delay', 0)
+    # 单股推送模式（#55）：从配置读取
+    single_stock_notify = getattr(self.config, 'single_stock_notify', False)
+    # Issue #119: 从配置读取报告类型
+    report_type_str = getattr(self.config, 'report_type', 'simple').lower()
+    report_type = ReportType.FULL if report_type_str == 'full' else ReportType.SIMPLE
+    # Issue #128: 从配置读取分析间隔
+    analysis_delay = getattr(self.config, 'analysis_delay', 0)
 
-        if single_stock_notify:
-            logger.info(f"已启用单股推送模式：每分析完一只股票立即推送（报告类型: {report_type_str}）")
-        
-        results: List[AnalysisResult] = []
-        
-        # 使用线程池并发处理
-        # 注意：max_workers 设置较低（默认3）以避免触发反爬
-with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-    # 提交任务
-    future_to_code = {
-        executor.submit(
-            self.process_single_stock,
-            code,
-            skip_analysis=dry_run,
-            single_stock_notify=single_stock_notify and send_notification,
-            report_type=report_type,
-            analysis_query_id=uuid.uuid4().hex,
-            cost_price=cost_price.get(code, 0),       # 修复报错
-            position_ratio=position_ratio.get(code, 0)  # 修复报错
-        ): code
-        for code in stock_codes
-    }
+    if single_stock_notify:
+        logger.info(f"已启用单股推送模式：每分析完一只股票立即推送（报告类型: {report_type_str}）")
+    
+    results: List[AnalysisResult] = []
+    
+    # 使用线程池并发处理
+    # 注意：max_workers 设置较低（默认3）以避免触发反爬
+    with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        # 提交任务
+        future_to_code = {
+            executor.submit(
+                self.process_single_stock,
+                code,
+                skip_analysis=dry_run,
+                single_stock_notify=single_stock_notify and send_notification,
+                report_type=report_type,
+                analysis_query_id=uuid.uuid4().hex,
+                cost_price=cost_price.get(code, 0.0),
+                position_ratio=position_ratio.get(code, 0.0)
+            ): code
+            for code in stock_codes
+        }
 
-    # 收集结果
-    for idx, future in enumerate(as_completed(future_to_code)):
-        code = future_to_code[future]
-        try:
-            result = future.result()
-            if result:
-                results.append(result)
+        # 收集结果
+        for idx, future in enumerate(as_completed(future_to_code)):
+            code = future_to_code[future]
+            try:
+                result = future.result()
+                if result:
+                    results.append(result)
 
-            if idx < len(stock_codes) - 1 and analysis_delay > 0:
-                logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
-                time.sleep(analysis_delay)
+                if idx < len(stock_codes) - 1 and analysis_delay > 0:
+                    logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
+                    time.sleep(analysis_delay)
 
-        except Exception as e:
-            logger.error(f"[{code}] 任务执行失败: {e}")
+            except Exception as e:
+                logger.error(f"[{code}] 任务执行失败: {e}")
 
-# 统计
-elapsed_time = time.time() - start_time        
+    # 统计
+    elapsed_time = time.time() - start_time        
     # dry-run 模式下，数据获取成功即视为成功
     if dry_run:
         # 检查哪些股票的数据今天已存在
@@ -1058,7 +1066,6 @@ elapsed_time = time.time() - start_time
             self._send_notifications(results)
 
     return results
-
 
 def _send_notifications(self, results: list, skip_push: bool = False) -> None:
     """
