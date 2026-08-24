@@ -40,6 +40,17 @@ class DummyCommand(BotCommand):
         return BotResponse.text_response("dummy-ok")
 
 
+class NamedDummyCommand(DummyCommand):
+    """DummyCommand with a custom name (BotCommand.name is a read-only property)."""
+
+    def __init__(self, name: str):
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+
 def _make_message(content: str, mentioned: bool = False) -> BotMessage:
     return BotMessage(
         platform="feishu",
@@ -173,6 +184,43 @@ class TestCommandDispatcherAsync(unittest.IsolatedAsyncioTestCase):
         mock_akshare.assert_not_called()
         _, args = ask_command.execute_async.await_args.args
         self.assertEqual(args, ["600519"])
+
+    async def test_nl_routing_never_touches_llm_for_slash_commands(self):
+        """斜杠命令守卫：/status 等即使走到 _try_nl_routing 也绝不调用 LLM。"""
+        dispatcher = CommandDispatcher()
+        config = SimpleNamespace(
+            agent_nl_routing=True,
+            agent_mode=True,
+            litellm_model="gemini/test-model",
+        )
+        llm_parse = AsyncMock(return_value={"intent": "chat", "codes": [], "strategy": None})
+
+        with patch("src.config.get_config", return_value=config):
+            with patch.object(dispatcher, "_parse_intent_via_llm", new=llm_parse):
+                for content in ("/status", "/batch", "/batch@MyStockBot", "/help"):
+                    result = await dispatcher._try_nl_routing(_make_message(content, mentioned=True))
+                    # 守卫生效：斜杠文本直接返回 None，绝不进入 LLM 意图解析
+                    self.assertIsNone(result)
+
+        llm_parse.assert_not_awaited()
+
+    async def test_dispatch_async_does_not_llm_for_slash_commands(self):
+        """/status /batch 必须命中本地命令执行，绝不走 NL 路由。"""
+        dispatcher = CommandDispatcher()
+        status_cmd = NamedDummyCommand("status")
+        status_cmd.execute_async = AsyncMock(return_value=BotResponse.text_response("status-ok"))
+        batch_cmd = NamedDummyCommand("batch")
+        batch_cmd.execute_async = AsyncMock(return_value=BotResponse.text_response("batch-ok"))
+        dispatcher.register(status_cmd)
+        dispatcher.register(batch_cmd)
+
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock()) as nl_mock:
+            r1 = await dispatcher.dispatch_async(_make_message("/status"))
+            r2 = await dispatcher.dispatch_async(_make_message("/batch"))
+
+        self.assertEqual(r1.text, "status-ok")
+        self.assertEqual(r2.text, "batch-ok")
+        nl_mock.assert_not_awaited()
 
 
 class TestCommandDispatcherSyncCompatibility(unittest.TestCase):

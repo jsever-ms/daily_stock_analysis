@@ -489,6 +489,14 @@ User: "analyze TSLA and NVDA using trend strategy"
         if not text or len(text) > 500:
             return None
 
+        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由。
+        # 命令应已由 _prepare_dispatch / get_command_and_args 命中；这里兜底
+        # 防止任何形态的斜杠文本被当作闲聊透传给 LLM（如 /batch@BotName 残留）。
+        if text.startswith(self.command_prefix):
+            logger.info("[Dispatcher] 以 %r 开头的文本不进入 NL 路由: %r",
+                        self.command_prefix, text[:60])
+            return None
+
         # Layer 1: cheap pre-filter — skip obviously irrelevant messages
         if not self._passes_nl_prefilter(text):
             return None
@@ -555,6 +563,12 @@ User: "analyze TSLA and NVDA using trend strategy"
 
         text = message.content.strip()
         if not text or len(text) > 500:
+            return None
+
+        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由（同步分支）。
+        if text.startswith(self.command_prefix):
+            logger.info("[Dispatcher] 以 %r 开头的文本不进入 NL 路由: %r",
+                        self.command_prefix, text[:60])
             return None
 
         if not self._passes_nl_prefilter(text):

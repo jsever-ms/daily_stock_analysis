@@ -119,6 +119,61 @@ class TestParseMessage(unittest.TestCase):
         }
         self.assertIsNone(client.parse_message(update))
 
+    def test_group_command_with_bot_suffix_stripped(self):
+        """/batch@MyStockBot 应剥离 @bot 后缀，保留 /batch 交给命令解析。"""
+        client = _client()
+        client._bot_username = "MyStockBot"
+        update = {
+            "update_id": 6,
+            "message": {
+                "message_id": 20,
+                "from": {"id": 444, "username": "carol"},
+                "chat": {"id": -1002, "type": "supergroup"},
+                "text": "/batch@MyStockBot",
+                "date": 1700000000,
+            },
+        }
+        msg = client.parse_message(update)
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.content, "/batch")
+        # 群聊命令后缀本身不应算作 @bot 提及
+        self.assertFalse(msg.mentioned)
+
+    def test_group_command_with_bot_suffix_and_args(self):
+        client = _client()
+        client._bot_username = "MyStockBot"
+        update = {
+            "update_id": 7,
+            "message": {
+                "message_id": 21,
+                "from": {"id": 444, "username": "carol"},
+                "chat": {"id": -1002, "type": "supergroup"},
+                "text": "/batch@MyStockBot 600519,000858",
+                "date": 1700000000,
+            },
+        }
+        msg = client.parse_message(update)
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.content, "/batch 600519,000858")
+
+    def test_private_command_slash_preserved(self):
+        """私聊斜杠命令保持原样，前缀剥离由 get_command_and_args 负责。"""
+        client = _client()
+        update = {
+            "update_id": 8,
+            "message": {
+                "message_id": 22,
+                "from": {"id": 111, "username": "alice"},
+                "chat": {"id": 222, "type": "private"},
+                "text": "/status",
+                "date": 1700000000,
+            },
+        }
+        msg = client.parse_message(update)
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.content, "/status")
+        self.assertEqual(msg.get_command_and_args("/"), ("status", []))
+
 
 class TestGetUpdates(unittest.TestCase):
     def test_no_offset_when_unset(self):

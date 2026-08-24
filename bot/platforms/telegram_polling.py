@@ -155,6 +155,25 @@ class TelegramPollingClient:
     #  update -> BotMessage                                                #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _strip_command_suffix(text: str) -> str:
+        """清理 Telegram 命令文本。
+
+        1. 群聊命令后缀：``/batch@BotName`` -> ``batch``、``/batch@BotName args`` -> ``batch args``；
+        2. 开头的斜杠前缀在分发器 ``get_command_and_args`` 里统一剥除。
+        这里只负责把 ``/cmd@bot`` 中的 ``@bot`` 后缀去掉，避免它混进命令名导致
+        ``get_command_and_args`` 把 ``batch@bot`` 当成未知命令。
+        """
+        stripped = text.strip()
+        # 仅当以 "/" 开头时处理，避免误伤普通文本中的 @ 提及
+        if not stripped.startswith("/"):
+            return stripped
+        head, _, tail = stripped.partition(" ")
+        if "@" in head:
+            cmd_part = head.split("@", 1)[0]
+            return (cmd_part + " " + tail).strip() if tail else cmd_part
+        return stripped
+
     def parse_message(self, raw: dict) -> Optional[BotMessage]:
         """把一条 Telegram update 解析为 ``BotMessage``。
 
@@ -181,19 +200,19 @@ class TelegramPollingClient:
         else:
             chat_type = ChatType.UNKNOWN
 
-        content = text
+        content = self._strip_command_suffix(text)
         mentioned = False
         # 群聊里识别 @bot 提及：剥掉开头的 @username，便于命令解析与 NL 路由
         if chat_type == ChatType.GROUP:
             bot_username = self._get_bot_username()
             if bot_username:
                 mention = f"@{bot_username}"
-                if mention in text:
+                if mention in content:
                     mentioned = True
-                    content = text.replace(mention, "").strip()
+                    content = content.replace(mention, "").strip()
             else:
                 # 拿不到 bot 用户名时，保守匹配任意开头的 @ 提及
-                stripped = text.lstrip()
+                stripped = content.lstrip()
                 if stripped.startswith("@"):
                     mentioned = True
                     rest = stripped.split(None, 1)
