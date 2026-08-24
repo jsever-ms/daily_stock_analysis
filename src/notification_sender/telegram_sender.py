@@ -363,6 +363,20 @@ class TelegramSender:
             logger.error("Telegram 图片发送异常: %s", e)
             return False
 
+    # 内部调试/阶段元信息行：Telegram 正文不展示（保留在日志与其他渠道）
+    _INTERNAL_METADATA_LINE_PREFIXES = (
+        "- 阶段：", "- 市场：", "- 触发来源：", "- 摘要来源：", "- 盘中数据提示：",
+        "- 数据质量", "- 限制", "- 阶段:", "- 市场:", "- 触发来源:", "- 摘要来源:",
+        "- data quality", "- limitation", "- phase:", "- trigger:",
+    )
+
+    def _drop_internal_metadata_lines(self, text: str) -> str:
+        kept = [
+            line for line in text.splitlines()
+            if not line.strip().startswith(self._INTERNAL_METADATA_LINE_PREFIXES)
+        ]
+        return "\n".join(kept)
+
     def _convert_to_telegram_markdown(self, text: str) -> str:
         """
         将标准 Markdown 转换为 Telegram 支持的格式
@@ -375,6 +389,8 @@ class TelegramSender:
         委托 formatters.format_telegram_markdown 统一处理：
         表格 → 键值行、标题 → 加粗、分隔线 → 长横线、代码块保护、
         非链接方括号/圆括号转义。
+        Telegram 正文另会剔除阶段/数据质量等内部调试行（仅影响本渠道）。
         """
         result = strip_hidden_markdown_metadata(text)
+        result = self._drop_internal_metadata_lines(result)
         return format_telegram_markdown(result)
