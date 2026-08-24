@@ -1755,6 +1755,10 @@ class AnalysisResult:
     fundamental_context: Optional[Dict[str, Any]] = None
     market_structure_context: Optional[Dict[str, Any]] = None
 
+    # ========== 持仓上下文（仅运行时展示用；不持久化）==========
+    cost_price: Optional[float] = None  # 用户买入成本（>0 时启用持仓诊断展示）
+    position_ratio: Optional[float] = None  # 持仓比例 %
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -3930,6 +3934,15 @@ class GeminiAnalyzer:
                 result.model_used = model_used
                 result.report_language = report_language
                 normalize_chip_structure_availability(result, context.get("chip"))
+                # 持仓上下文挂到结果上，供通知层程序化计算盈亏（不进 prompt，不改 LLM 输出）
+                try:
+                    if cost_price and float(cost_price) > 0:
+                        result.cost_price = float(cost_price)
+                        result.position_ratio = (
+                            float(position_ratio) if position_ratio else None
+                        )
+                except (TypeError, ValueError):
+                    pass
 
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
