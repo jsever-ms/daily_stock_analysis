@@ -417,6 +417,8 @@ class StockAnalysisPipeline:
         report_type: ReportType,
         query_id: str,
         current_time: Optional[datetime] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0,
     ) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
@@ -773,6 +775,8 @@ class StockAnalysisPipeline:
                     progress_callback=self._emit_progress,
                     stream_progress_callback=_on_llm_stream,
                     analysis_context_pack_summary=analysis_context_pack_summary,
+                    cost_price=cost_price,
+                    position_ratio=position_ratio,
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 if result is not None:
@@ -3082,6 +3086,8 @@ class StockAnalysisPipeline:
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
         current_time: Optional[datetime] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -3141,6 +3147,8 @@ class StockAnalysisPipeline:
             analyze_kwargs = {"query_id": effective_query_id}
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
+            analyze_kwargs["cost_price"] = cost_price
+            analyze_kwargs["position_ratio"] = position_ratio
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
             
             if result and result.success:
@@ -3178,6 +3186,8 @@ class StockAnalysisPipeline:
         send_notification: bool = True,
         merge_notification: bool = False,
         current_time: Optional[datetime] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0,
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -3271,6 +3281,8 @@ class StockAnalysisPipeline:
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
                     current_time=resume_reference_time,
+                    cost_price=cost_price,
+                    position_ratio=position_ratio,
                 ): code
                 for code in stock_codes
             }
