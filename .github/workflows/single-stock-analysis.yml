@@ -14,6 +14,15 @@ on:
         description: '持仓比例 %（0-100，配合买入成本使用）'
         required: false
         default: '0'
+      detail_level:
+        description: '推送详细度：simple = 决策仪表盘（默认）/ brief = 极简速览 / full = 完整报告'
+        required: false
+        default: 'simple'
+        type: choice
+        options:
+          - simple
+          - brief
+          - full
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -53,6 +62,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHAT_ID }}
           # 数据源（可选）
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          # 报告详细度：simple / brief / full（对应 config.report_type）
+          REPORT_TYPE: ${{ github.event.inputs.detail_level || 'simple' }}
           TZ: Asia/Shanghai
         run: |
           echo "=========================================="
@@ -60,6 +71,7 @@ jobs:
           echo "📊 股票代码: ${{ github.event.inputs.stock_code }}"
           echo "💰 买入成本: ${{ github.event.inputs.cost_price }}"
           echo "📈 持仓比例: ${{ github.event.inputs.position_ratio }}%"
+          echo "📄 推送详细度: ${{ github.event.inputs.detail_level || 'simple' }}"
           echo "=========================================="
           python main.py \
             --stocks "${{ github.event.inputs.stock_code }}" \
