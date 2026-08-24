@@ -1956,34 +1956,229 @@ class NotificationService(
         core = dashboard.get('core_conclusion', {}) if dashboard else {}
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
+        persp = dashboard.get('data_perspective', {}) if dashboard else {}
+        price_pos = persp.get('price_position', {}) if persp else {}
+        trend_status = persp.get('trend_status', {}) if persp else {}
+        vol_data = persp.get('volume_analysis', {}) if persp else {}
+        phase_decision = dashboard.get('phase_decision', {}) if dashboard else {}
+        snapshot = getattr(result, 'market_snapshot', None) or {}
+
+        # 程序化计算（LLM 不参与）：量价分类 / 多周期 / 盈亏比 / 检查清单统计 / 数据状态
+        from src.services.market_metrics import (
+            action_state_label,
+            build_data_status,
+            checklist_stats,
+            classify_volume_price,
+            extract_price,
+            format_signed_pct,
+            ma_alignment_label,
+            multi_period_trend,
+            overall_data_confidence,
+            position_pnl,
+            risk_reward,
+        )
+
+        def _n(en: str, zh: str, ko: str = "") -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko or en
+            return zh
+
+        state_emoji, state_label = action_state_label(
+            getattr(result, 'action', None), result.sentiment_score
+        )
 
         # 股票名称（转义 *ST 等特殊字符）
         stock_name = self._get_display_name(result, report_language)
 
-        lines = [
+        def _fnum(value: Any) -> str:
+            try:
+                f = float(value)
+                return f"{f:g}"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        lines: List[str] = [
             f"## {signal_emoji} {stock_name} ({result.code})",
             "",
-            f"> {report_date} | {labels['score_label']}: **{result.sentiment_score}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
-            "",
+            f"{state_emoji} {_n('Signal', '综合信号', '신호')}: {result.sentiment_score}/100｜{state_label}"
+            f"｜{_n('Confidence', '置信度', '신뢰도')}: {result.confidence_level or 'N/A'}",
         ]
+        if trend_status.get('trend_score') is not None:
+            lines.append(
+                f"{_n('Trend strength', '趋势强度', '추세 강도')}: {trend_status.get('trend_score')}/100"
+            )
+        lines.append(f"*{report_date}*")
+        lines.append("")
 
-        excerpt = self._public_phase_pack_excerpt(result, report_language)
-        if excerpt:
-            lines.extend([excerpt, ""])
-
-        self._append_market_snapshot(lines, result)
-
-        # 核心决策（一句话）
+        # ========== 1) 一句话结论 ==========
         one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
         if one_sentence:
             lines.extend([
-                f"### 📌 {labels['core_conclusion_heading']}",
+                f"### 📌 {_n('One-line Verdict', '一句话结论', '한 줄 결론')}",
                 "",
-                f"**{signal_text}**: {one_sentence}",
+                f"{state_emoji} {state_label}",
+                str(one_sentence)[:120],
                 "",
             ])
 
-        # 重要信息（舆情+基本面）
+        # ========== 2) 今日行情（每行一键值，禁用表格） ==========
+        if snapshot:
+            lines.extend([
+                f"### 📈 {_n('Today Quote', '今日行情', '오늘 시세')}",
+                "",
+                f"{labels['close_label']}：{snapshot.get('close', 'N/A')}",
+                f"{labels['change_pct_label']}：{format_signed_pct(snapshot.get('pct_chg')) or snapshot.get('pct_chg', 'N/A')}",
+                f"{labels['open_label']}：{snapshot.get('open', 'N/A')}",
+                f"{labels['high_label']}：{snapshot.get('high', 'N/A')}",
+                f"{labels['low_label']}：{snapshot.get('low', 'N/A')}",
+                f"{labels['amount_label']}：{snapshot.get('amount', 'N/A')}",
+            ])
+            if snapshot.get('volume_ratio') is not None:
+                lines.append(f"{labels['volume_ratio_label']}：{snapshot.get('volume_ratio', 'N/A')}")
+            if snapshot.get('turnover_rate') is not None:
+                lines.append(f"{labels['turnover_rate_label']}：{snapshot.get('turnover_rate', 'N/A')}%")
+            lines.append("")
+
+        # ========== 3) 趋势判断（均线 + 多周期，程序计算） ==========
+        ma5 = _safe_float(price_pos.get('ma5'))
+        ma10 = _safe_float(price_pos.get('ma10'))
+        ma20 = _safe_float(price_pos.get('ma20'))
+        current_price = _safe_float(snapshot.get('price')) or _safe_float(snapshot.get('close')) \
+            or _safe_float(price_pos.get('current_price')) or _safe_float(getattr(result, 'current_price', None))
+        if any(v is not None for v in (ma5, ma10, ma20)):
+            alignment = ma_alignment_label(ma5, ma10, ma20)
+            lines.extend([
+                f"### 📈 {_n('Trend', '趋势判断', '추세')}",
+                "",
+            ])
+            if ma5 is not None:
+                lines.append(f"MA5：{_fnum(ma5)}")
+            if ma10 is not None:
+                lines.append(f"MA10：{_fnum(ma10)}")
+            if ma20 is not None:
+                lines.append(f"MA20：{_fnum(ma20)}")
+            if alignment:
+                lines.append(f"{_n('MA structure', '均线结构', '이동평균 구조')}：{alignment[1]} {alignment[0]}")
+            periods = multi_period_trend(current_price, ma5, ma10, ma20)
+            if periods:
+                lines.append(
+                    f"{_n('Short (1-5d)', '短线（1-5日）', '단기(1-5일)')}：{periods['short']['tone']} {periods['short']['label']}"
+                )
+                lines.append(
+                    f"{_n('Swing (5-20d)', '波段（5-20日）', '스윙(5-20일)')}：{periods['swing']['tone']} {periods['swing']['label']}"
+                )
+                lines.append(
+                    f"{_n('Mid (20-60d)', '中期（20-60日）', '중기(20-60일)')}：{periods['mid']['tone']} {periods['mid']['label']}"
+                )
+            if result.ma_analysis:
+                lines.append(f"{_n('Technical view', '技术结论', '기술 결론')}：{str(result.ma_analysis)[:100]}")
+            lines.append("")
+
+        # ========== 4) 量价分析（程序分类） ==========
+        vol_ratio = snapshot.get('volume_ratio', (vol_data or {}).get('volume_ratio'))
+        vp = classify_volume_price(
+            snapshot.get('pct_chg', getattr(result, 'change_pct', None)),
+            vol_ratio,
+            (vol_data or {}).get('volume_status'),
+        )
+        if vp:
+            lines.extend([
+                f"### 📊 {_n('Volume-Price', '量价分析', '거래량 분석')}",
+                "",
+                f"{_n('Change', '今日涨跌', '등락')}：{format_signed_pct(snapshot.get('pct_chg')) or snapshot.get('pct_chg', 'N/A')}",
+                f"{labels['volume_ratio_label']}：{vol_ratio if vol_ratio is not None else 'N/A'}",
+            ])
+            if (vol_data or {}).get('turnover_rate') or snapshot.get('turnover_rate'):
+                tr = snapshot.get('turnover_rate', (vol_data or {}).get('turnover_rate'))
+                lines.append(f"{labels['turnover_rate_label']}：{tr}%")
+            lines.append("")
+            lines.append(
+                f"{_n('Volume-price verdict', '量价结论', '거래량 결론')}：{vp['tone']} {vp['label']}"
+            )
+            lines.append(vp['detail'])
+            if (vol_data or {}).get('volume_meaning'):
+                lines.append(str(vol_data['volume_meaning'])[:80])
+            lines.append("")
+
+        # ========== 5) 关键价位 + 触发条件 ==========
+        sniper = battle.get('sniper_points', {}) if battle else {}
+        key_levels: List[Tuple[str, Any]] = []
+        resistance = price_pos.get('resistance_level')
+        support = price_pos.get('support_level')
+        if resistance is not None:
+            key_levels.append(("🔵 " + _n("Turn-strong confirm", "转强确认", "전환 확인"), resistance))
+        ideal_buy = sniper.get('ideal_buy')
+        if ideal_buy and ideal_buy not in ("-", "N/A"):
+            key_levels.append(("⚪ " + _n("First watch", "第一观察", "1차 관찰"), ideal_buy))
+        if support is not None:
+            key_levels.append(("🟠 " + _n("Strong support", "强支撑", "강지지"), support))
+        stop_loss = sniper.get('stop_loss')
+        if stop_loss and stop_loss not in ("-", "N/A"):
+            key_levels.append(("🔴 " + _n("Risk level", "风险位", "리스크 레벨"), stop_loss))
+        take_profit = sniper.get('take_profit')
+        if take_profit and take_profit not in ("-", "N/A"):
+            key_levels.append(("🎯 " + _n("Upper pressure", "上方压力", "상방 저항"), take_profit))
+        if key_levels:
+            lines.extend([
+                f"### 🎯 {_n('Key Levels', '关键价位', '핵심 가격')}",
+                "",
+            ])
+            for name_label, value in key_levels:
+                lines.append(f"{name_label}：{self._clean_sniper_value(value) if hasattr(self, '_clean_sniper_value') else value}")
+            watch_conditions = phase_decision.get('watch_conditions') or []
+            if watch_conditions:
+                lines.append("")
+                lines.append(f"**{_n('Triggers', '触发条件', '트리거 조건')}**")
+                for cond in watch_conditions[:4]:
+                    lines.append(f"- {str(cond)[:80]}")
+            lines.append("")
+
+        # ========== 6) 操作策略（空仓 / 持仓） ==========
+        pos_advice = core.get('position_advice', {}) if core else {}
+        if pos_advice:
+            lines.extend([
+                f"### 💼 {labels['position_advice_heading']}",
+                "",
+                f"- 🆕 **{labels['no_position_label']}**：{pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))}",
+                f"- 💼 **{labels['has_position_label']}**：{pos_advice.get('has_position', labels['continue_holding'])}",
+            ])
+            cost_price = getattr(result, 'cost_price', None)
+            if cost_price:
+                lines.append("")
+                lines.append(f"{_n('My cost', '当前成本', '내 평단')}：{_fnum(cost_price)}")
+                pnl = position_pnl(current_price, cost_price)
+                if pnl is not None:
+                    pnl_word = _n('Unrealized P&L', '当前浮亏', '평가손익')
+                    lines.append(f"{pnl_word}：{pnl:+.1f}%")
+                position_ratio = getattr(result, 'position_ratio', None)
+                if position_ratio:
+                    lines.append(f"{_n('Position ratio', '持仓比例', '포지션 비중')}：{_fnum(position_ratio)}%")
+            lines.append("")
+
+        # ========== 7) 条件检查清单（统计由程序计算） ==========
+        checklist = battle.get('action_checklist', []) if battle else []
+        if checklist:
+            stats = checklist_stats(checklist)
+            lines.extend([
+                f"### ✅ {_n('Buy Condition Checklist', '条件检查', '조건 체크')}",
+                "",
+            ])
+            for item in checklist:
+                lines.append(f"- {item}")
+            if stats and stats['total']:
+                lines.append("")
+                lines.append(
+                    f"{_n('Satisfied', '当前满足', '충족')}：{stats['ok']}/{stats['total']}"
+                )
+                if stats['ok'] >= stats['total']:
+                    lines.append(f"🟢 {_n('All conditions met', '条件齐备', '조건 충족')}")
+                else:
+                    lines.append(f"🟡 {_n('Conditions insufficient, no buy signal', '条件不足，暂不触发买入信号', '조건 부족, 매수 신호 없음')}")
+            lines.append("")
+
+        # ========== 8) 消息面（有新闻才显示） ==========
         info_added = False
         news_disclosure = self._empty_news_disclosure(result, report_language)
         if news_disclosure:
@@ -2029,65 +2224,65 @@ class NotificationService(
         if info_added:
             lines.append("")
 
-        # 狙击点位
-        sniper = battle.get('sniper_points', {}) if battle else {}
-        if sniper:
-            lines.extend([
-                f"### 🎯 {labels['action_points_heading']}",
-                "",
-                f"| {labels['ideal_buy_label']} | {labels['stop_loss_label']} | {labels['take_profit_label']} |",
-                "|------|------|------|",
-            ])
-            ideal_buy = sniper.get('ideal_buy', '-')
-            stop_loss = sniper.get('stop_loss', '-')
-            take_profit = sniper.get('take_profit', '-')
-            lines.append(f"| {ideal_buy} | {stop_loss} | {take_profit} |")
-            lines.append("")
-
-        # ========== 信号归因分析 ==========
-        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
-        if signal_attribution_has_content(signal_attr):
-            lines.extend([
-                f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
-                "",
-            ])
-            # 归因权重
-            weight_items = signal_attribution_weight_items(signal_attr)
-            if weight_items:
-                lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
-                weight_labels = {
-                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
-                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
-                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
-                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
-                }
-                for key, value in weight_items:
-                    icon, label = weight_labels[key]
-                    lines.append(f"- {icon} {label}: {value}%")
-                lines.append("")
-
-            # 最强信号
-            bullish = signal_attr.get('strongest_bullish_signal')
-            bearish = signal_attr.get('strongest_bearish_signal')
-            if bullish:
-                lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
-            if bearish:
-                lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
-            lines.append("")
-
-        # 持仓建议
-        pos_advice = core.get('position_advice', {}) if core else {}
-        if pos_advice:
-            lines.extend([
-                f"### 💼 {labels['position_advice_heading']}",
-                "",
-                f"- 🆕 **{labels['no_position_label']}**: {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))}",
-                f"- 💼 **{labels['has_position_label']}**: {pos_advice.get('has_position', labels['continue_holding'])}",
-                "",
-            ])
-
-        # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
+        # ========== 9) 基本面 / 关联板块（数据缺失自动隐藏） ==========
         self._append_fundamental_blocks(lines, result)
+
+        # ========== 10) 风险收益比（纯价格空间计算） ==========
+        # 优先使用关键价位模块的止损/压力（口径一致），缺失或不成立时回退均线支撑/压力
+        sl_price = extract_price(stop_loss)
+        tp_price = extract_price(take_profit)
+        rr = None
+        if sl_price is not None and tp_price is not None:
+            rr = risk_reward(current_price, sl_price, tp_price)
+        if rr is None:
+            rr = risk_reward(
+                current_price,
+                sl_price if sl_price is not None else support,
+                tp_price if tp_price is not None else resistance,
+            )
+        if rr:
+            lines.extend([
+                f"### ⚖️ {_n('Risk / Reward', '风险收益', '리스크/리워드')}",
+                "",
+                f"{_n('Current', '当前价', '현재가')}：{_fnum(current_price)}",
+                f"{_n('Risk level', '风险位', '리스크 레벨')}：{_fnum(rr['support'])}（{rr['down_pct']:+.1f}%）",
+                f"{_n('Target', '第一目标', '1차 목표')}：{_fnum(rr['resistance'])}（{rr['up_pct']:+.1f}%）",
+                f"{_n('R/R ratio', '盈亏比', '손익비')}：约 {rr['ratio']:.1f} : 1",
+                "",
+                f"> ⚠️ {_n('Ratio is price-space math only; targets are not guaranteed.', '盈亏比只是价格空间计算，不代表目标价一定能够达到。', '손익비는 가격 공간 계산일 뿐입니다.')}",
+                "",
+            ])
+
+        # ========== 11) 下一观察点 ==========
+        watch_next = phase_decision.get('watch_conditions') or []
+        if watch_next or phase_decision.get('next_check_time') or phase_decision.get('immediate_action'):
+            lines.extend([
+                f"### ⏰ {_n('Next Watch', '下一观察点', '다음 관찰')}",
+                "",
+            ])
+            if phase_decision.get('immediate_action'):
+                lines.append(f"{_n('Now', '当前动作', '현재 동작')}：{phase_decision['immediate_action']}")
+            for cond in watch_next[:4]:
+                lines.append(f"- {str(cond)[:80]}")
+            if phase_decision.get('next_check_time'):
+                lines.append(f"{_n('Next check', '下次检查', '다음 확인')}：{phase_decision['next_check_time']}")
+            lines.append("")
+
+        # ========== 12) 数据状态（程序盘点） ==========
+        status_rows = build_data_status(result)
+        if status_rows:
+            confidence = overall_data_confidence(status_rows)
+            lines.extend([
+                f"### 🔍 {_n('Data Status', '数据状态', '데이터 상태')}",
+                "",
+            ])
+            for dim, ok, note in status_rows:
+                mark = "✅" if ok else "⚠️"
+                suffix = f"（{note}）" if (not ok and note) else ""
+                lines.append(f"{dim}：{mark}{suffix}")
+            lines.append("")
+            lines.append(f"{_n('Overall confidence', '本次置信度', '신뢰도')}: {confidence}")
+            lines.append("")
 
         lines.append("---")
         if self._should_show_llm_model():
