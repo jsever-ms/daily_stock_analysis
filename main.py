@@ -308,6 +308,20 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--cost-price',
+        type=float,
+        default=0.0,
+        help='买入成本价（>0 时启用私人投顾模式，注入个人持仓诊断）'
+    )
+
+    parser.add_argument(
+        '--position-ratio',
+        type=float,
+        default=0.0,
+        help='持仓比例（百分比 0-100，配合 --cost-price 使用）'
+    )
+
+    parser.add_argument(
         '--portfolio',
         type=str.lower,
         choices=('futu',),
@@ -909,6 +923,8 @@ def run_full_analysis(
                 send_notification=not args.no_notify,
                 merge_notification=merge_notification,
                 current_time=analysis_reference_time,
+                cost_price=getattr(args, 'cost_price', 0.0) or 0.0,
+                position_ratio=getattr(args, 'position_ratio', 0.0) or 0.0,
             )
 
         if should_use_daily_market_context and not market_context_summary:
