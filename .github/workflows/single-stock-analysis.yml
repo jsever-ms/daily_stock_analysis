@@ -45,14 +45,12 @@ jobs:
 
       - name: 执行单股深度分析
         env:
-          # AI 配置：Gemini 主选，硅基流动（SILICON_FLOW_KEY）作为 OpenAI 兼容备选
+          # AI 配置：Gemini 主选（股票分析），DeepSeek 官方 Key（secrets.DEEPSEEKV3）作为聊天/备选通道
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.SILICON_FLOW_KEY }}
-          OPENAI_BASE_URL: https://api.siliconflow.cn/v1
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'deepseek-ai/DeepSeek-V3.1' }}
-          # 通知：复用已有 TG_TOKEN / TG_CHAT_ID secrets，映射到应用读取的环境变量名
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TG_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEKV3 }}
+          # 通知：仓库现有 secrets 名为 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID（旧名 TG_TOKEN / TG_CHAT_ID 兜底）
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHAT_ID }}
           # 数据源（可选）
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           TZ: Asia/Shanghai
