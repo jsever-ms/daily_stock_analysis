@@ -1328,6 +1328,20 @@ def start_bot_stream_clients(config: Config) -> None:
         except Exception as exc:
             logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
 
+    # Telegram Long Polling 客户端（双向监听，纯 HTTP，无需追加 SDK）
+    # 只需配置 TELEGRAM_BOT_TOKEN；开关 TELEGRAM_POLLING_ENABLED 默认开启。
+    # 与钉钉/飞书 Stream 不同，这里走独立 daemon 线程里的独立事件循环，
+    # 避免与 FastAPI / 主事件循环互相阻塞。
+    if getattr(config, 'telegram_polling_enabled', True):
+        try:
+            from bot.platforms import start_telegram_polling_background
+            if start_telegram_polling_background():
+                logger.info("[Main] Telegram polling client started in background.")
+            else:
+                logger.info("[Main] Telegram polling skipped (token 未配置或已被别的进程接管)。")
+        except Exception as exc:
+            logger.error(f"[Main] Failed to start Telegram polling client: {exc}")
+
 
 def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional[List[str]]:
     """Scheduled runs should always read the latest persisted watchlist."""

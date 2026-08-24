@@ -1057,6 +1057,8 @@ class Config:
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
     telegram_chat_id: Optional[str] = None  # Chat ID
     telegram_message_thread_id: Optional[str] = None  # Topic ID (Message Thread ID) for groups
+    # Telegram 双向监听开关：开启后在配置了 Token 时启动 getUpdates 长轮询，接收指令
+    telegram_polling_enabled: bool = True
     
     # 邮件配置（只需邮箱和授权码，SMTP 自动识别）
     email_sender: Optional[str] = None  # 发件人邮箱
@@ -2027,6 +2029,7 @@ class Config:
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
+            telegram_polling_enabled=os.getenv('TELEGRAM_POLLING_ENABLED', 'true').lower() == 'true',
             email_sender=os.getenv('EMAIL_SENDER'),
             email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
             email_password=os.getenv('EMAIL_PASSWORD'),
