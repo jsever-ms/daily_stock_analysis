@@ -10,10 +10,9 @@ import logging
 from typing import Optional
 import requests
 import time
-import re
 
 from src.config import Config
-from src.formatters import strip_hidden_markdown_metadata
+from src.formatters import format_telegram_markdown, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -369,34 +368,13 @@ class TelegramSender:
         将标准 Markdown 转换为 Telegram 支持的格式
 
         Telegram Markdown 限制：
-        - 不支持 # 标题
+        - 不支持 # 标题（转为 *bold*）
         - 使用 *bold* 而非 **bold**
-        - 使用 _italic_
+        - 不支持管道表格（手机端比例字体会错位，转为「键：值」行）
+
+        委托 formatters.format_telegram_markdown 统一处理：
+        表格 → 键值行、标题 → 加粗、分隔线 → 长横线、代码块保护、
+        非链接方括号/圆括号转义。
         """
         result = strip_hidden_markdown_metadata(text)
-
-        # 移除 # 标题标记（Telegram 不支持）
-        result = re.sub(r'^#{1,6}\s+', '', result, flags=re.MULTILINE)
-
-        # 转换 **bold** 为 *bold*
-        result = re.sub(r'\*\*(.+?)\*\*', r'*\1*', result)
-
-        # Escape special characters for Telegram Markdown, but preserve link syntax [text](url)
-        # Step 1: temporarily protect markdown links
-        import uuid as _uuid
-        _link_placeholder = f"__LINK_{_uuid.uuid4().hex[:8]}__"
-        _links = []
-        def _save_link(m):
-            _links.append(m.group(0))
-            return f"{_link_placeholder}{len(_links) - 1}"
-        result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _save_link, result)
-
-        # Step 2: escape remaining special chars
-        for char in ['[', ']', '(', ')']:
-            result = result.replace(char, f'\\{char}')
-
-        # Step 3: restore links
-        for i, link in enumerate(_links):
-            result = result.replace(f"{_link_placeholder}{i}", link)
-
-        return result
+        return format_telegram_markdown(result)
