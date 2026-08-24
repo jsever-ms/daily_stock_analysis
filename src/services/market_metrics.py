@@ -18,10 +18,18 @@ RISK = "\U0001F534"        # 🔴
 
 
 def _to_float(value: Any) -> Optional[float]:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, str):
+        # 容忍数据源给出的 "2.00%" / "1,304.66" 之类文本
+        s = value.strip().replace(",", "").rstrip("%")
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+    else:
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return None
     if f != f:  # NaN
         return None
     return f
@@ -209,6 +217,14 @@ def format_signed_pct(value: Any) -> Optional[str]:
     if f is None:
         return None
     return f"{f:+.2f}%"
+
+
+def format_pct(value: Any) -> Optional[str]:
+    """无符号百分比：0.40%；输入可为数字或 '0.40%' 文本。"""
+    f = _to_float(value)
+    if f is None:
+        return None
+    return f"{f:.2f}%"
 
 
 def extract_price(value: Any) -> Optional[float]:
