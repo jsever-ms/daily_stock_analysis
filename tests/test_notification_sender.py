@@ -1909,7 +1909,7 @@ class TestTelegramSender(unittest.TestCase):
         self.assertEqual(second_payload["text"], content)
 
     @mock.patch("src.notification_sender.telegram_sender.requests.post")
-    def test_send_uses_legacy_telegram_report_formatter(self, mock_post):
+    def test_send_converts_tables_to_mobile_friendly_rows(self, mock_post):
         mock_post.return_value = _response(200, {"ok": True})
         cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
         sender = TelegramSender(cfg)
@@ -1929,7 +1929,8 @@ class TestTelegramSender(unittest.TestCase):
         rendered = payload["text"]
         self.assertIn("日报", rendered)
         self.assertIn("📊 分析结果摘要", rendered)
-        self.assertIn("| 股票 | 信号 |", rendered)
+        self.assertIn("股票：600519 | 信号：强势", rendered)
+        self.assertNotIn("| 股票 |", rendered)
         self.assertIn("[详情](https://example.com/report)", rendered)
         self.assertNotIn("# 日报", rendered)
 
