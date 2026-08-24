@@ -3681,6 +3681,8 @@ class GeminiAnalyzer:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
         analysis_context_pack_summary: Optional[str] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -3819,6 +3821,8 @@ class GeminiAnalyzer:
                 news_context,
                 report_language=report_language,
                 analysis_context_pack_summary=analysis_context_pack_summary,
+                cost_price=cost_price,
+                position_ratio=position_ratio,
             )
             legacy_audit_context = {
                 "language": report_language,
@@ -4005,6 +4009,8 @@ class GeminiAnalyzer:
         news_context: Optional[str] = None,
         report_language: str = "zh",
         analysis_context_pack_summary: Optional[str] = None,
+        cost_price: float = 0.0,
+        position_ratio: float = 0.0,
     ) -> str:
         """
         格式化分析提示词（决策仪表盘 v2.0）
@@ -4063,6 +4069,29 @@ class GeminiAnalyzer:
 | 股票代码 | **{code}** |
 | 股票名称 | **{stock_name}** |
 | 分析日期 | {context.get('date', unknown_text)} |
+
+---
+"""
+        # fork 定制：私人投顾模式（--cost-price > 0 时注入个人持仓诊断）
+        if cost_price and float(cost_price) > 0:
+            ratio_text = (
+                f"{float(position_ratio):g}%"
+                if position_ratio and float(position_ratio) > 0
+                else "未提供"
+            )
+            prompt += f"""
+## 👤 私人持仓诊断（用户实盘持仓，最高优先级参考）
+
+| 项目 | 数据 |
+|------|------|
+| **我的买入成本** | **{float(cost_price):g} 元** |
+| **我的持仓比例** | **{ratio_text}** |
+
+**⚠️ 私人投顾任务**：
+1. 以最新价格对比买入成本，计算**盈亏比例**（精确到 0.1%），写入核心结论。
+2. 针对当前盈亏状态给出**量身定制**的操作策略：具体止盈位、止损位、补仓位（精确到分），不要模棱两可。
+3. 若持仓比例超过 50%，必须在 `risk_alerts` 中**首要提示仓位过重风险**。
+4. 面向持仓者的建议（`has_position` 相关字段）必须结合成本价给出，例如"当前浮亏 x%，跌破成本价 y 元建议止损"。
 
 ---
 """
