@@ -53,6 +53,13 @@ except ImportError:
     get_feishu_stream_client = lambda: None
     start_feishu_stream_background = lambda: False
 
+# Telegram Long Polling 模式
+from bot.platforms.telegram_polling import (
+    TelegramPollingClient,
+    start_telegram_polling_background,
+    stop_telegram_polling,
+)
+
 __all__ = [
     'BotPlatform',
     'DingtalkPlatform',
@@ -70,4 +77,8 @@ __all__ = [
     'get_feishu_stream_client',
     'start_feishu_stream_background',
     'FEISHU_SDK_AVAILABLE',
+    # Telegram Long Polling 模式
+    'TelegramPollingClient',
+    'start_telegram_polling_background',
+    'stop_telegram_polling',
 ]

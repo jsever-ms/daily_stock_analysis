@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [新功能] Telegram 增加双向监听：配置 `TELEGRAM_BOT_TOKEN` 后默认以 Long Polling（getUpdates，offset 递增 + 长轮询）在后台线程接收指令，封装为 `BotMessage` 走 `dispatcher.dispatch_async()` 分发，并用现有 `TelegramSender` 回复到原会话；支持断线指数退避重连与优雅停止，代理复用 `HTTP(S)_PROXY`（含 SOCKS5，需 `pysocks`）；可通过 `TELEGRAM_POLLING_ENABLED=false` 关闭仍保留单向推送。
+
 ## [3.31.0] - 2026-08-23
 
 ### 发布亮点

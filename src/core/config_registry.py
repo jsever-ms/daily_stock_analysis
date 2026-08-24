@@ -2118,6 +2118,25 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 19,
     },
+    "TELEGRAM_POLLING_ENABLED": {
+        "title": "Telegram Polling (双向监听)",
+        "description": "配置 Telegram Bot Token 后，是否启动 getUpdates 长轮询以接收指令并回复（Long Polling 模式）。关闭则仅保留单向推送。",
+        "category": "notification",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": True,
+        "options": [],
+        "validation": {},
+        "display_order": 20,
+        "help_key": "settings.notification.telegram",
+        "examples": [
+            "TELEGRAM_POLLING_ENABLED=true",
+        ],
+        "warning_codes": [],
+    },
     # ------------------------------------------------------------------
     # Notification – Email
     # ------------------------------------------------------------------
