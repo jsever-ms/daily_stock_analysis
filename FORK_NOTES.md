@@ -4,7 +4,7 @@
 
 ## 与上游的差异
 
-改动集中在 4 个文件 + 本说明：
+改动集中在 6 个文件 + 本说明：
 
 | 文件 | 改动 |
 |------|------|
@@ -12,6 +12,8 @@
 | `main.py` | 新增 `--cost-price` / `--position-ratio` 命令行参数，传入分析管线 |
 | `src/core/pipeline.py` | `run()` → `process_single_stock()` → `analyze_stock()` 逐层透传持仓参数 |
 | `src/analyzer.py` | `analyze()` / `_format_prompt()` 接收持仓参数；买入成本 > 0 时注入「私人持仓诊断」模块 |
+| `src/notification_sender/telegram_sender.py` | Markdown 管道表格在 Telegram 手机端错位：发送前委托 `format_telegram_markdown` 统一转换为「键：值」行（含标题加粗/括号转义/代码块保护） |
+| `tests/test_notification_sender.py` | 同步更新对应单测期望（表格 → 键值行） |
 
 ## 使用方式
 
@@ -42,12 +44,12 @@ python main.py --stocks 600519 --cost-price 25.8 --position-ratio 30 --single-no
 
 | Secret | 用途 | 状态 |
 |--------|------|------|
-| `GEMINI_API_KEY` | AI 分析（主选） | 沿用已有 |
-| `TG_TOKEN` | Telegram 推送（映射到 `TELEGRAM_BOT_TOKEN`） | 沿用已有 |
-| `TG_CHAT_ID` | Telegram 推送（映射到 `TELEGRAM_CHAT_ID`） | 沿用已有 |
-| `SILICON_FLOW_KEY` | 硅基流动备选（映射到 `OPENAI_API_KEY`，可选） | 沿用已有 |
+| `GEMINI_API_KEY` | AI 股票分析（主选） | 沿用已有 |
+| `DEEPSEEKV3` | DeepSeek 聊天/备选通道（映射到 `DEEPSEEK_API_KEY`，配置层优先级 gemini > deepseek，不影响分析主选） | 沿用已有 |
+| `TELEGRAM_BOT_TOKEN` | Telegram 推送 | 沿用已有（旧名 `TG_TOKEN` 自动兜底） |
+| `TELEGRAM_CHAT_ID` | Telegram 推送 | 沿用已有（旧名 `TG_CHAT_ID` 自动兜底） |
 
-> 注意：应用代码读取的环境变量名是 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`，workflow 中已做映射，无需重新配置 secrets。
+> 双 AI 通道：Gemini 负责股票分析（主模型 `gemini-3.1-pro-preview`），DeepSeek 官方 Key 负责聊天等场景，并在 Gemini 失败时作为备选。
 
 ## 同步上游
 
@@ -82,4 +84,4 @@ git fetch upstream && git reset --hard upstream/main
 git add -A && git commit -m "单股私人投顾模式（基于上游 v3.31.0 重做定制）" && git push --force
 ```
 
-> Secrets 沿用 fork 里已有的 `GEMINI_API_KEY` / `TG_TOKEN` / `TG_CHAT_ID`（可选 `SILICON_FLOW_KEY`、`TUSHARE_TOKEN`），无需新增。
+> Secrets 沿用 fork 里已有的 `GEMINI_API_KEY` / `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `DEEPSEEKV3`（可选 `TUSHARE_TOKEN`），无需新增。
