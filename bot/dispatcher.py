@@ -258,6 +258,16 @@ class CommandDispatcher:
 
         return result_holder.get("response", BotResponse.error_response("命令执行失败"))
 
+    def _looks_like_command(self, *texts) -> bool:
+        """判断任一段文本是否以命令前缀开头。
+
+        用于 content 清洗丢失前缀时的兜底：只要任一形态（content / raw_content）
+        是命令形态，就绝不落入 NL 路由，避免斜杠命令被当闲聊透传给 LLM。
+        """
+        return any(
+            (t or "").strip().startswith(self.command_prefix) for t in texts
+        )
+
     def _prepare_dispatch(self, message: BotMessage) -> tuple[Optional[str], List[str], Optional[BotCommand], Optional[BotResponse]]:
         """Run shared dispatch pre-checks for sync/async entrypoints."""
         if not self._rate_limiter.is_allowed(message.user_id):
@@ -297,6 +307,11 @@ class CommandDispatcher:
             return early_response
 
         if cmd_name is None:
+            # 用户确实发了以命令前缀开头的文本（content 被清洗丢失前缀），绝不透传 LLM
+            if self._looks_like_command(message.content, message.raw_content):
+                return BotResponse.error_response(
+                    f"未知命令，发送 `{self.command_prefix}help` 查看可用命令。"
+                )
             nl_result = self._try_nl_routing_sync(message)
             if nl_result is not None:
                 return nl_result
@@ -335,6 +350,11 @@ class CommandDispatcher:
 
         if cmd_name is None:
             # Not a command — try natural language routing before falling back
+            # 命令形态兜底：即使 content 清洗丢了前缀，也绝不进 LLM
+            if self._looks_like_command(message.content, message.raw_content):
+                return BotResponse.error_response(
+                    f"未知命令，发送 `{self.command_prefix}help` 查看可用命令。"
+                )
             nl_result = await self._try_nl_routing(message)
             if nl_result is not None:
                 return nl_result
@@ -489,10 +509,10 @@ User: "analyze TSLA and NVDA using trend strategy"
         if not text or len(text) > 500:
             return None
 
-        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由。
+        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由（含清洗丢前缀场景）。
         # 命令应已由 _prepare_dispatch / get_command_and_args 命中；这里兜底
         # 防止任何形态的斜杠文本被当作闲聊透传给 LLM（如 /batch@BotName 残留）。
-        if text.startswith(self.command_prefix):
+        if self._looks_like_command(text, message.raw_content):
             logger.info("[Dispatcher] 以 %r 开头的文本不进入 NL 路由: %r",
                         self.command_prefix, text[:60])
             return None
@@ -565,8 +585,8 @@ User: "analyze TSLA and NVDA using trend strategy"
         if not text or len(text) > 500:
             return None
 
-        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由（同步分支）。
-        if text.startswith(self.command_prefix):
+        # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由（同步分支，含清洗丢前缀场景）。
+        if self._looks_like_command(text, message.raw_content):
             logger.info("[Dispatcher] 以 %r 开头的文本不进入 NL 路由: %r",
                         self.command_prefix, text[:60])
             return None

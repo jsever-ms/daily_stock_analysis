@@ -51,7 +51,7 @@ class NamedDummyCommand(DummyCommand):
         return self._name
 
 
-def _make_message(content: str, mentioned: bool = False) -> BotMessage:
+def _make_message(content: str, mentioned: bool = False, raw_content: str = None) -> BotMessage:
     return BotMessage(
         platform="feishu",
         message_id="m1",
@@ -60,7 +60,7 @@ def _make_message(content: str, mentioned: bool = False) -> BotMessage:
         chat_id="c1",
         chat_type=ChatType.PRIVATE,
         content=content,
-        raw_content=content,
+        raw_content=raw_content if raw_content is not None else content,
         mentioned=mentioned,
         timestamp=datetime.now(),
     )
@@ -221,6 +221,27 @@ class TestCommandDispatcherAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r1.text, "status-ok")
         self.assertEqual(r2.text, "batch-ok")
         nl_mock.assert_not_awaited()
+
+    async def test_dispatch_async_blocks_llm_when_content_lost_slash_prefix(self):
+        """清洗丢前缀（content="status" 但 raw="/status"）时，斜杠命令也不许进 LLM。"""
+        dispatcher = CommandDispatcher()
+
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock()) as nl_mock:
+            result = await dispatcher.dispatch_async(
+                _make_message("status", raw_content="/status")
+            )
+
+        self.assertIn("未知命令", result.text)
+        nl_mock.assert_not_awaited()
+        # 即使直接调 _try_nl_routing 也应被守卫拦截
+        cfg = SimpleNamespace(agent_nl_routing=True, agent_mode=True, litellm_model="m")
+        with patch("src.config.get_config", return_value=cfg):
+            with patch.object(dispatcher, "_parse_intent_via_llm", new=AsyncMock()) as llm_parse:
+                out = await dispatcher._try_nl_routing(
+                    _make_message("status", raw_content="/status", mentioned=True)
+                )
+        self.assertIsNone(out)
+        llm_parse.assert_not_awaited()
 
 
 class TestCommandDispatcherSyncCompatibility(unittest.TestCase):
