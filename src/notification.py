@@ -1970,6 +1970,7 @@ class NotificationService(
             checklist_stats,
             classify_volume_price,
             extract_price,
+            format_pct,
             format_signed_pct,
             ma_alignment_label,
             multi_period_trend,
@@ -2038,7 +2039,9 @@ class NotificationService(
             if snapshot.get('volume_ratio') is not None:
                 lines.append(f"{labels['volume_ratio_label']}：{snapshot.get('volume_ratio', 'N/A')}")
             if snapshot.get('turnover_rate') is not None:
-                lines.append(f"{labels['turnover_rate_label']}：{snapshot.get('turnover_rate', 'N/A')}%")
+                lines.append(
+                    f"{labels['turnover_rate_label']}：{format_pct(snapshot.get('turnover_rate')) or snapshot.get('turnover_rate', 'N/A')}"
+                )
             lines.append("")
 
         # ========== 3) 趋势判断（均线 + 多周期，程序计算） ==========
@@ -2092,7 +2095,7 @@ class NotificationService(
             ])
             if (vol_data or {}).get('turnover_rate') or snapshot.get('turnover_rate'):
                 tr = snapshot.get('turnover_rate', (vol_data or {}).get('turnover_rate'))
-                lines.append(f"{labels['turnover_rate_label']}：{tr}%")
+                lines.append(f"{labels['turnover_rate_label']}：{format_pct(tr) or tr}")
             lines.append("")
             lines.append(
                 f"{_n('Volume-price verdict', '量价结论', '거래량 결론')}：{vp['tone']} {vp['label']}"
