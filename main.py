@@ -427,6 +427,13 @@ def parse_arguments() -> argparse.Namespace:
         help='不保存分析上下文快照'
     )
 
+    parser.add_argument(
+        '--telegram-only',
+        action='store_true',
+        help='仅启动 Telegram Long Polling 常驻机器人：不启动 Web/ASGI (uvicorn) 服务、'
+             '不执行股票分析/定时任务，持续监听 /start、/help、/status 等命令'
+    )
+
     # === Backtest ===
     parser.add_argument(
         '--backtest',
@@ -1195,6 +1202,42 @@ def _run_analysis_with_runtime_scheduler_lock(
     return bool(lock_acquired and task_result["ok"])
 
 
+def _run_telegram_only_mode(config: Config, args: argparse.Namespace) -> int:
+    """仅启动 Telegram Long Polling 常驻机器人（Railway 等常驻部署场景）。
+
+    - 不启动 ASGI / uvicorn / Web 服务
+    - 不执行任何股票分析、大盘复盘或定时任务
+    - 复用 ``bot.platforms.start_telegram_polling_background`` 在 daemon 线程的
+      独立事件循环里持续 getUpdates 长轮询；主线程阻塞保活，进程即常驻
+
+    Returns:
+        退出码（0 表示正常退出；1 表示配置缺失 / 启动失败）
+    """
+    logger.info("模式: 仅 Telegram Bot 常驻（Long Polling）")
+    if not getattr(config, "telegram_bot_token", None):
+        logger.error("未配置 TELEGRAM_BOT_TOKEN，无法启动 Telegram 轮询。")
+        return 1
+    if not getattr(config, "telegram_polling_enabled", True):
+        logger.error("TELEGRAM_POLLING_ENABLED=false，已禁用 Telegram 轮询。")
+        return 1
+    try:
+        from bot.platforms import start_telegram_polling_background
+        started = start_telegram_polling_background()
+    except Exception as exc:
+        logger.exception("启动 Telegram 轮询失败: %s", exc)
+        return 1
+    if not started:
+        logger.error("Telegram 轮询启动失败（Token 缺失或已被禁用），请检查配置。")
+        return 1
+    logger.info("Telegram Long Polling 常驻运行中（按 Ctrl+C 退出）...")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("\n用户中断，程序退出")
+        return 0
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -1484,6 +1527,11 @@ def main() -> int:
         result = run_notification_diagnostics(config)
         print(format_notification_diagnostics(result))
         return 0 if result.ok else 1
+
+    # === 仅 Telegram Bot 常驻模式：不启动 Web/ASGI、不执行股票分析 ===
+    # 放在 serve/schedule/分析分支之前，确保 Railway 等常驻部署只跑 Telegram 轮询。
+    if getattr(args, "telegram_only", False):
+        return _run_telegram_only_mode(config, args)
 
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None

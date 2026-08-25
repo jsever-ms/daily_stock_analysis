@@ -265,6 +265,42 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(observed_bind, [("0.0.0.0", 8000)])
 
+    def test_telegram_only_starts_polling_without_server_or_analysis(self) -> None:
+        """--telegram-only：不启动 ASGI/uvicorn、不执行分析，只启动 Telegram 轮询并常驻。"""
+        args = self._make_args(telegram_only=True)
+        config = self._make_config(
+            telegram_bot_token="12345:ABC",
+            telegram_polling_enabled=True,
+        )
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.start_api_server") as start_server, \
+             patch("main.run_full_analysis") as run_analysis, \
+             patch("bot.platforms.start_telegram_polling_background",
+                   return_value=True) as start_polling, \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        start_polling.assert_called_once()
+        start_server.assert_not_called()
+        run_analysis.assert_not_called()
+
+    def test_telegram_only_missing_token_fails_fast(self) -> None:
+        """--telegram-only：未配置 TELEGRAM_BOT_TOKEN 时快速失败，不尝试启动轮询。"""
+        args = self._make_args(telegram_only=True)
+        config = self._make_config(telegram_bot_token=None)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("bot.platforms.start_telegram_polling_background") as start_polling:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        start_polling.assert_not_called()
+
     def test_start_api_server_fails_before_thread_when_port_is_busy(self) -> None:
         config = self._make_config(log_level="INFO")
 
