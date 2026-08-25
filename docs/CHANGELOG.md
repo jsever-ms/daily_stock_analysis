@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增独立 Telegram 快速测试脚本 `scripts/test_telegram.py`：5~10 秒内复用正式配置（`src.config.get_config`）与正式 `TelegramSender` 发送链路，依次执行 getMe 验证与 sendMessage，向 Telegram 发送「✅ Telegram 推送测试成功」（含时间、运行环境、git commit）；只输出 Token 概要（存在性/长度/空格/换行/冒号）与 Chat ID 存在性、getMe/sendMessage 真实 HTTP 状态，明确区分 401/400/403/404/网络错误，完整 Token 永不进日志。
 - [新功能] 新增手动 workflow `.github/workflows/telegram-test.yml`：仅 `workflow_dispatch` 触发、不运行股票分析，将 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` Secret 同名注入后执行 Telegram 测试脚本。
 - [改进] `TelegramSender` 记录最近一次 getMe/sendMessage 真实 HTTP 状态（`last_get_me_status` / `last_send_message_status`，网络失败为 `None`），并新增公开 `verify_token()` 方法复用同一底层验证逻辑。
+- [修复] Telegram 快速测试脚本改为真正的最小依赖：`telegram_sender.py` 的 `Config` 改为仅类型引用（运行时不再导入 `src.config`，避免连带 llm/scheduler/股票行情等重型模块）；测试脚本通过 importlib 按文件路径直接加载 `telegram_sender.py` / `runtime_info.py`，刻意跳过 `src.notification_sender/__init__.py`（会导入全部发送器，其中 Feishu 依赖未安装的 `lark_oapi`）。Token/Chat ID 仍读取与正式代码完全一致的 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`，workflow 依赖缩至 `requests` + `markdown2`。
+- [测试] 新增 `tests/test_telegram_test_script.py` 回归测试：在屏蔽 `src.config` / `src.notification_sender` 导入链的前提下验证脚本仍可完成 getMe → sendMessage，并校验状态输出顺序（getMe 先于 sendMessage）、Token 不泄露、401/缺配置/含空格等失败路径。
 
 ## [3.31.0] - 2026-08-23
 

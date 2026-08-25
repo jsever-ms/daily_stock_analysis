@@ -7,11 +7,15 @@ Telegram 发送提醒服务
 2. 通过 Telegram Bot API 发送 图片消息
 """
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import requests
 import time
 
-from src.config import Config
+# Config 仅用于类型标注：避免在最小依赖环境（如 GitHub Actions 的快速测试）
+# 中因导入 src.config 而连带加载 llm/scheduler/股票行情等无关重型模块。
+if TYPE_CHECKING:
+    from src.config import Config
+
 from src.formatters import format_telegram_markdown, strip_hidden_markdown_metadata
 
 
@@ -20,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class TelegramSender:
 
-    def __init__(self, config: Config):
+    def __init__(self, config: "Config"):
         """
         初始化 Telegram 配置
 

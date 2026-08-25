@@ -24,10 +24,10 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: 安装最小依赖（复用正式 sendMessage 链路所需）
+      - name: 安装最小依赖（仅 Telegram 发送链路所需：requests + markdown2）
         run: |
           pip install --quiet --disable-pip-version-check \
-            requests pydantic pydantic-settings python-dotenv markdown2
+            requests markdown2
 
       - name: 运行 Telegram 推送快速测试
         run: |

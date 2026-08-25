@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-独立 Telegram 快速测试脚本（不运行股票分析流程）
+独立 Telegram 快速测试脚本（不运行股票分析流程，最小依赖）
 
 目标：5~10 秒内验证 GitHub Secrets 中 Telegram 配置是否可用。
+本脚本只依赖标准库 + `requests` + `markdown2`，不会通过导入链连带加载
+EmailSender / Feishu / data_provider / 股票行情等无关模块：
+
+- 通过 ``importlib`` 直接按文件路径加载 ``telegram_sender.py`` 与 ``runtime_info.py``，
+  刻意跳过 ``src.notification_sender/__init__.py``（会导入全部发送器）与
+  ``bot/__init__.py``（会导入 dispatcher → src.config 重型链路）的包级导入；
+- 不导入 ``src.config``，但 Token / Chat ID 读取的环境变量名与正式代码
+  （``src/config.py`` 的 ``TELEGRAM_BOT_TOKEN`` / ``TELEGRAM_CHAT_ID``）完全一致，
+  即同一份 GitHub Secrets。
 
 流程：
-    1. 读取项目实际使用的 Telegram Bot Token / Chat ID
-       （与正式代码同一来源：`src.config.get_config()` → `config.telegram_bot_token` /
-       `config.telegram_chat_id`，环境变量 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`）
-    2. 调用 Telegram getMe 验证 Token
-    3. 成功后调用 sendMessage（复用正式 `TelegramSender.send_to_telegram` 同一条发送逻辑）
+    1. 读取 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID（与正式代码同源）
+    2. getMe 验证 Token
+    3. 成功后 sendMessage（复用正式 TelegramSender 同一条发送逻辑）
     4. Telegram 收到："✅ Telegram 推送测试成功"（含时间、运行环境、git commit）
 
 安全要求：
     - 禁止打印完整 Bot Token，仅打印存在性 / 长度 / 空格 / 换行 / 冒号
     - 明确区分 401 / 400 / 403 / 404 / 网络错误
+    - 日志先出现 getMe 状态，再出现 sendMessage 状态
 
 退出码：0 = getMe + sendMessage 全部成功；1 = 失败（缺少配置 / Token 无效 / 发送失败）
 
@@ -22,17 +30,43 @@
     python scripts/test_telegram.py
 """
 
+import importlib.util
 import logging
+import os
 import platform
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("test_telegram")
+
+
+def _load_module_from_file(module_name: str, relative_path: str):
+    """按文件路径加载模块，避免触发其所在包的 __init__ 连带导入。
+
+    仅用于加载真正轻量的模块（telegram_sender.py / runtime_info.py）。
+    """
+    file_path = ROOT / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载模块文件: {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    # 让模块内部的 `from src.formatters import ...` 等正常解析
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _read_telegram_config() -> tuple:
+    """读取 Token / Chat ID，环境变量名与正式代码 src/config.py 完全一致。"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "") or ""
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "") or ""
+    return bot_token, chat_id
 
 
 def _describe_status(kind: str, status) -> str:
@@ -54,13 +88,21 @@ def _describe_status(kind: str, status) -> str:
     return f"{kind}: 非预期状态 (HTTP {status})"
 
 
+def _load_sender():
+    """加载正式 TelegramSender（仅其所在文件，跳过包 __init__）。"""
+    sender_module = _load_module_from_file("_tg_test_telegram_sender",
+                                           "src/notification_sender/telegram_sender.py")
+    return sender_module.TelegramSender
+
+
 def _build_test_message() -> str:
     """构造测试消息：固定文案 + 时间 / 运行环境 / git commit。"""
+    revision = "unknown"
     try:
-        from bot.runtime_info import get_runtime_revision
-        revision = get_runtime_revision()
+        runtime_info = _load_module_from_file("_tg_test_runtime_info", "bot/runtime_info.py")
+        revision = runtime_info.get_runtime_revision()
     except Exception:
-        revision = "unknown"
+        revision = os.getenv("DSA_GIT_COMMIT", "").strip() or "unknown"
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     env = f"{platform.system()} / Python {platform.python_version()}"
@@ -80,15 +122,7 @@ def main() -> int:
         stream=sys.stdout,
     )
 
-    # 与正式代码同一配置读取入口
-    from src.config import get_config
-    from src.notification_sender.telegram_sender import TelegramSender
-
-    config = get_config()
-    sender = TelegramSender(config)
-
-    bot_token = sender._telegram_config.get("bot_token") or ""
-    chat_id = sender._telegram_config.get("chat_id") or ""
+    bot_token, chat_id = _read_telegram_config()
 
     # --- 安全诊断：只输出概要，禁止完整 Token ---
     has_space = " " in bot_token
@@ -109,7 +143,15 @@ def main() -> int:
               "请编辑 Secret 全选清空后重新粘贴。")
         return 1
 
-    # --- 1. getMe 验证 ---
+    # --- 复用正式 TelegramSender（同一底层发送逻辑 + 同一配置属性名） ---
+    TelegramSender = _load_sender()
+    sender = TelegramSender(SimpleNamespace(
+        telegram_bot_token=bot_token,
+        telegram_chat_id=chat_id,
+        telegram_message_thread_id=None,
+    ))
+
+    # --- 1. getMe 验证（先输出 getMe 状态） ---
     get_me_ok = sender.verify_token()
     print(_describe_status("getMe", sender.last_get_me_status))
 
