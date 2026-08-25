@@ -99,10 +99,12 @@ class BotMessage:
         parts = text.split()
         if not parts:
             return None, []
-        
-        command = parts[0].lower()
+
+        # 命令名统一小写，并剥离 Telegram 风格的 @bot 后缀（/status@BotName -> status），
+        # 兼容群聊中携带 bot 用户名的命令形态。
+        command = parts[0].lower().split("@", 1)[0]
         args = parts[1:] if len(parts) > 1 else []
-        
+
         return command, args
     
     def is_command(self, prefix: str = "/") -> bool:

@@ -66,6 +66,22 @@ def _make_message(content: str, mentioned: bool = False, raw_content: str = None
     )
 
 
+class TestCommandRegistry(unittest.TestCase):
+    """/help 必须展示真实注册命令：ALL_COMMANDS 是唯一注册源。"""
+
+    def test_all_commands_includes_start(self):
+        from bot.commands import ALL_COMMANDS
+        from bot.commands.start import StartCommand
+
+        self.assertIn(StartCommand, ALL_COMMANDS)
+
+    def test_all_commands_names_are_unique(self):
+        from bot.commands import ALL_COMMANDS
+
+        names = [cls().name for cls in ALL_COMMANDS]
+        self.assertEqual(len(names), len(set(names)), names)
+
+
 class TestBotCommandAsync(unittest.IsolatedAsyncioTestCase):
     async def test_execute_async_uses_to_thread(self):
         cmd = DummyCommand()
@@ -242,6 +258,75 @@ class TestCommandDispatcherAsync(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertIsNone(out)
         llm_parse.assert_not_awaited()
+
+
+class TestUnknownCommandGuard(unittest.IsolatedAsyncioTestCase):
+    """未知命令必须返回统一提示，绝不进入 LLM / NL 路由。"""
+
+    async def test_unknown_command_returns_unified_hint(self):
+        dispatcher = CommandDispatcher()
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock()) as nl_mock:
+            result = await dispatcher.dispatch_async(_make_message("/abcdefg"))
+        self.assertIn("未知命令", result.text)
+        self.assertIn("/abcdefg", result.text)
+        self.assertIn("/help", result.text)
+        self.assertIn("查看当前可用命令", result.text)
+        nl_mock.assert_not_awaited()
+
+    async def test_unknown_command_with_args_is_still_unknown(self):
+        dispatcher = CommandDispatcher()
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock()) as nl_mock:
+            result = await dispatcher.dispatch_async(_make_message("/abcdefg 123"))
+        self.assertIn("/abcdefg", result.text)
+        nl_mock.assert_not_awaited()
+
+    async def test_known_command_with_bot_suffix_parses(self):
+        """/analyze@Bot 600519 经 telegram 清洗为 /analyze 600519 后正确解析参数。"""
+        dispatcher = CommandDispatcher()
+        analyze_cmd = NamedDummyCommand("analyze")
+        analyze_cmd.execute_async = AsyncMock(return_value=BotResponse.text_response("analyze-ok"))
+        dispatcher.register(analyze_cmd)
+
+        msg = _make_message("/analyze 600519")
+        result = await dispatcher.dispatch_async(msg)
+        self.assertEqual(result.text, "analyze-ok")
+        analyze_cmd.execute_async.assert_awaited_once_with(msg, ["600519"])
+
+    async def test_dispatcher_level_bot_suffix_resolves_known_command(self):
+        """/status@MyStockBot 未经平台预清洗也能命中已知命令（get_command_and_args 兜底剥离 @bot）。"""
+        dispatcher = CommandDispatcher()
+        status_cmd = NamedDummyCommand("status")
+        status_cmd.execute_async = AsyncMock(return_value=BotResponse.text_response("status-ok"))
+        dispatcher.register(status_cmd)
+
+        result = await dispatcher.dispatch_async(_make_message("/status@MyStockBot"))
+        self.assertEqual(result.text, "status-ok")
+        status_cmd.execute_async.assert_awaited_once()
+
+    async def test_unknown_command_with_bot_suffix_is_unknown(self):
+        """/notreal@MyStockBot 剥离后缀后仍为未知命令，不得进入 LLM。"""
+        dispatcher = CommandDispatcher()
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock()) as nl_mock:
+            result = await dispatcher.dispatch_async(_make_message("/notreal@MyStockBot"))
+        self.assertIn("未知命令", result.text)
+        self.assertIn("/notreal", result.text)
+        nl_mock.assert_not_awaited()
+
+    async def test_start_command_registered_and_returns_greeting(self):
+        """/start 命中已注册的 StartCommand，返回欢迎语而非未知命令。"""
+        from bot.commands.start import StartCommand
+
+        dispatcher = CommandDispatcher()
+        dispatcher.register(StartCommand())
+        result = await dispatcher.dispatch_async(_make_message("/start"))
+        self.assertIn("欢迎使用股票分析助手", result.text)
+        self.assertIn("/help", result.text)
+
+    async def test_normal_text_is_not_unknown_command(self):
+        dispatcher = CommandDispatcher()
+        with patch.object(dispatcher, "_try_nl_routing", new=AsyncMock(return_value=None)):
+            result = await dispatcher.dispatch_async(_make_message("贵州茅台现在怎么样？"))
+        self.assertNotIn("未知命令", result.text)
 
 
 class TestCommandDispatcherSyncCompatibility(unittest.TestCase):

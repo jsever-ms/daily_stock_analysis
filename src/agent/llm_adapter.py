@@ -583,6 +583,36 @@ class LLMToolAdapter:
             timeout=timeout,
         )
 
+    @staticmethod
+    def _find_blocked_command(messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Return the command text if the latest user turn starts with ``/``.
+
+        Final safety net against command passthrough to the LLM API: if the
+        original user message about to be sent to the model starts with the
+        command prefix (``/``), refuse it regardless of what the upper layers
+        did.  Only the most recent ``user`` turn is inspected — assistant /
+        tool / system messages are never treated as commands, and older user
+        turns in history have already been validated when they were sent.
+        """
+        for message in reversed(messages or []):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                stripped = content.strip()
+                return stripped if stripped.startswith("/") else None
+            # 多模态 content 为块列表：仅拼装其中的纯文本块进行判断
+            if isinstance(content, list):
+                texts = [
+                    str(block.get("text", ""))
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                stripped = "".join(texts).strip()
+                return stripped if stripped.startswith("/") else None
+            return None
+        return None
+
     def call_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -594,6 +624,16 @@ class LLMToolAdapter:
         timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Shared completion path for both tool and text-only calls."""
+        # 最终安全兜底：任何以命令前缀（/）开头的用户消息都不得进入 LLM API。
+        # 即使上层 Command Router 将来被改坏，这里也会拦截命令穿透。
+        blocked_cmd = self._find_blocked_command(messages)
+        if blocked_cmd is not None:
+            logger.warning("Blocked command passthrough: %s", blocked_cmd)
+            return LLMResponse(
+                content="命令不能直接发送给 AI 模型，请通过机器人命令入口使用。",
+                provider="error",
+            )
+
         config = self._config
         if self._backend_error is not None:
             error_msg = (

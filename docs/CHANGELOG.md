@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] Telegram 增加双向监听：配置 `TELEGRAM_BOT_TOKEN` 后默认以 Long Polling（getUpdates，offset 递增 + 长轮询）在后台线程接收指令，封装为 `BotMessage` 走 `dispatcher.dispatch_async()` 分发，并用现有 `TelegramSender` 回复到原会话；支持断线指数退避重连与优雅停止，代理复用 `HTTP(S)_PROXY`（含 SOCKS5，需 `pysocks`）；可通过 `TELEGRAM_POLLING_ENABLED=false` 关闭仍保留单向推送。
 - [修复] Telegram 命令解析强化：`parse_message` 剥离 `/cmd@BotName` 群聊命令后缀；分发器对以命令前缀开头的文本增加 NL 路由守卫，确保 `/status`、`/batch`、`/help` 等一律命中本地命令处理器，绝不透传 LLM 作闲聊。
+- [修复] Telegram 命令与 AI 普通聊天完全隔离：命令识别一律由程序完成，不再交给 LLM 判断。所有以 `/` 开头的消息先进入 Command Router，已知命令执行后立即返回；未知命令统一回复「⚠️ 未知命令：/xxx\n发送 /help 查看当前可用命令。」并立即 return，绝不透传 LLM。
+- [新功能] 新增 `/start` 命令，作为 Telegram「开始」按钮入口，返回欢迎语与机器人能力指引。
+- [改进] `/help` 改为从实际命令注册表（`ALL_COMMANDS`）动态生成命令列表，删除或新增命令后自动同步，不再依赖 LLM 生成命令说明。
+- [改进] 命令解析支持 `/cmd@BotName` 群聊形态（平台层与分发器双层剥离 @bot 后缀），并支持带参数命令（如 `/analyze 600519`、`/batch 600519 000858`）。
+- [修复] 增加最终安全兜底：LLM 统一入口（`llm_adapter.call_completion`）在调用 API 前再次校验最新用户消息，若以 `/` 开头则直接拦截并记录日志（`Blocked command passthrough`），即使上层路由将来被改坏也不会再次发生命令穿透。
 
 ## [3.31.0] - 2026-08-23
 

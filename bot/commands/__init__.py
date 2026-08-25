@@ -8,6 +8,7 @@
 """
 
 from bot.commands.base import BotCommand
+from bot.commands.start import StartCommand
 from bot.commands.help import HelpCommand
 from bot.commands.status import StatusCommand
 from bot.commands.analyze import AnalyzeCommand
@@ -21,6 +22,7 @@ from bot.commands.history import HistoryCommand
 
 # All available commands (for auto-registration)
 ALL_COMMANDS = [
+    StartCommand,
     HelpCommand,
     StatusCommand,
     AnalyzeCommand,
@@ -35,6 +37,7 @@ ALL_COMMANDS = [
 
 __all__ = [
     'BotCommand',
+    'StartCommand',
     'HelpCommand',
     'StatusCommand',
     'AnalyzeCommand',

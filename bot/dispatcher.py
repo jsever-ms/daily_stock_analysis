@@ -268,6 +268,23 @@ class CommandDispatcher:
             (t or "").strip().startswith(self.command_prefix) for t in texts
         )
 
+    @staticmethod
+    def _extract_command_text(message: BotMessage) -> str:
+        """从消息原始文本中提取命令形态的首个 token（如 ``/abcde``）。
+
+        用于 content 清洗丢失前缀时，尽量还原用户实际输入的命令文本以便提示。
+        """
+        for source in (message.raw_content, message.content):
+            stripped = (source or "").strip()
+            if not stripped.startswith("/"):
+                continue
+            token = stripped.split(None, 1)[0]
+            # 去掉 /cmd@bot 的 @bot 后缀，仅保留命令本体
+            if "@" in token:
+                token = token.split("@", 1)[0]
+            return token
+        return "/?"
+
     def _prepare_dispatch(self, message: BotMessage) -> tuple[Optional[str], List[str], Optional[BotCommand], Optional[BotResponse]]:
         """Run shared dispatch pre-checks for sync/async entrypoints."""
         if not self._rate_limiter.is_allowed(message.user_id):
@@ -284,9 +301,10 @@ class CommandDispatcher:
 
         command = self.get_command(cmd_name)
         if command is None:
-            return cmd_name, args, None, BotResponse.error_response(
-                f"未知命令: {cmd_name}\n"
-                f"发送 `{self.command_prefix}help` 查看可用命令。"
+            # 未知命令拦截：绝不放行到 LLM，统一回复格式
+            return cmd_name, args, None, BotResponse.text_response(
+                f"⚠️ 未知命令：/{cmd_name}\n"
+                f"发送 {self.command_prefix}help 查看当前可用命令。"
             )
 
         if command.admin_only and not self.is_admin(message.user_id):
@@ -309,8 +327,9 @@ class CommandDispatcher:
         if cmd_name is None:
             # 用户确实发了以命令前缀开头的文本（content 被清洗丢失前缀），绝不透传 LLM
             if self._looks_like_command(message.content, message.raw_content):
-                return BotResponse.error_response(
-                    f"未知命令，发送 `{self.command_prefix}help` 查看可用命令。"
+                return BotResponse.text_response(
+                    f"⚠️ 未知命令：{self._extract_command_text(message)}\n"
+                    f"发送 {self.command_prefix}help 查看当前可用命令。"
                 )
             nl_result = self._try_nl_routing_sync(message)
             if nl_result is not None:
@@ -352,8 +371,9 @@ class CommandDispatcher:
             # Not a command — try natural language routing before falling back
             # 命令形态兜底：即使 content 清洗丢了前缀，也绝不进 LLM
             if self._looks_like_command(message.content, message.raw_content):
-                return BotResponse.error_response(
-                    f"未知命令，发送 `{self.command_prefix}help` 查看可用命令。"
+                return BotResponse.text_response(
+                    f"⚠️ 未知命令：{self._extract_command_text(message)}\n"
+                    f"发送 {self.command_prefix}help 查看当前可用命令。"
                 )
             nl_result = await self._try_nl_routing(message)
             if nl_result is not None:
