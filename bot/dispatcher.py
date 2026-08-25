@@ -297,9 +297,17 @@ class CommandDispatcher:
         if cmd_name is None:
             return None, args, None, None
 
-        logger.info(f"[Dispatcher] 收到命令: {cmd_name}, 参数: {args}, 用户: {message.user_name}")
-
         command = self.get_command(cmd_name)
+
+        # [TG-DIAG] 命令解析结果 + dispatcher 实例 + matched handler。
+        # 用于实机排查：确认消息进入的是哪个 dispatcher 实例、命中了哪个 Handler。
+        logger.info(
+            "[TG-DIAG] 命令解析: cmd=%r, args=%r, matched=%s, dispatcher=%s@0x%x, 已注册命令=%d, 用户=%s",
+            cmd_name, args,
+            type(command).__name__ if command else "无(未知命令)",
+            type(self).__name__, id(self), len(self._commands), message.user_name,
+        )
+
         if command is None:
             # 未知命令拦截：绝不放行到 LLM，统一回复格式
             return cmd_name, args, None, BotResponse.text_response(
@@ -371,10 +379,18 @@ class CommandDispatcher:
             # Not a command — try natural language routing before falling back
             # 命令形态兜底：即使 content 清洗丢了前缀，也绝不进 LLM
             if self._looks_like_command(message.content, message.raw_content):
+                logger.info(
+                    "[TG-DIAG] 命令形态兜底拦截(cmd解析为None): content=%r, raw=%r → 未知命令，不进入NL",
+                    message.content, message.raw_content,
+                )
                 return BotResponse.text_response(
                     f"⚠️ 未知命令：{self._extract_command_text(message)}\n"
                     f"发送 {self.command_prefix}help 查看当前可用命令。"
                 )
+            logger.info(
+                "[TG-DIAG] 非命令消息 → 尝试NL路由: content=%r, raw=%r, dispatcher@0x%x",
+                message.content, message.raw_content, id(self),
+            )
             nl_result = await self._try_nl_routing(message)
             if nl_result is not None:
                 return nl_result
@@ -513,27 +529,31 @@ User: "analyze TSLA and NVDA using trend strategy"
         config = get_config()
 
         if not getattr(config, 'agent_nl_routing', False):
+            logger.debug("[TG-DIAG] NL路由跳过: agent_nl_routing 未开启")
             return None
 
         # Only handle private chat or @mentioned messages to avoid hijacking
         is_private = message.chat_type.value == "private"
         if not is_private and not message.mentioned:
+            logger.debug("[TG-DIAG] NL路由跳过: 非私聊且未被@提及")
             return None
 
         # Keep Bot-side Agent entrypoints behind explicit opt-in so NL routing
         # cannot bypass AGENT_MODE=false.
         if not getattr(config, 'agent_mode', False):
+            logger.debug("[TG-DIAG] NL路由跳过: agent_mode 未开启")
             return None
 
         text = message.content.strip()
         if not text or len(text) > 500:
+            logger.debug("[TG-DIAG] NL路由跳过: 文本为空或超过500字符")
             return None
 
         # 命令守卫：以命令前缀（/）开头的文本绝不进入 NL 路由（含清洗丢前缀场景）。
         # 命令应已由 _prepare_dispatch / get_command_and_args 命中；这里兜底
         # 防止任何形态的斜杠文本被当作闲聊透传给 LLM（如 /batch@BotName 残留）。
         if self._looks_like_command(text, message.raw_content):
-            logger.info("[Dispatcher] 以 %r 开头的文本不进入 NL 路由: %r",
+            logger.info("[TG-DIAG] NL路由命令守卫拦截: 以 %r 开头不进入 NL: %r",
                         self.command_prefix, text[:60])
             return None
 
@@ -562,7 +582,7 @@ User: "analyze TSLA and NVDA using trend strategy"
         if intent == "chat":
             chat_cmd = self.get_command("chat")
             if chat_cmd:
-                logger.info("[Dispatcher] NL routing → /chat: %s", text[:60])
+                logger.info("[TG-DIAG] NL路由 → /chat: %s", text[:60])
                 return await chat_cmd.execute_async(message, [text])
             return None
 
@@ -579,7 +599,7 @@ User: "analyze TSLA and NVDA using trend strategy"
                 args.append(strategy)
 
             logger.info(
-                "[Dispatcher] NL routing → /ask %s (strategy=%s, text=%s)",
+                "[TG-DIAG] NL路由 → /ask %s (strategy=%s, text=%s)",
                 code_str, strategy, text[:60],
             )
             return await ask_cmd.execute_async(message, args)
@@ -633,7 +653,7 @@ User: "analyze TSLA and NVDA using trend strategy"
         if intent == "chat":
             chat_cmd = self.get_command("chat")
             if chat_cmd:
-                logger.info("[Dispatcher] NL routing → /chat: %s", text[:60])
+                logger.info("[TG-DIAG] NL路由 → /chat: %s", text[:60])
                 return chat_cmd.execute(message, [text])
             return None
 
@@ -648,7 +668,7 @@ User: "analyze TSLA and NVDA using trend strategy"
                 args.append(strategy)
 
             logger.info(
-                "[Dispatcher] NL routing → /ask %s (strategy=%s, text=%s)",
+                "[TG-DIAG] NL路由 → /ask %s (strategy=%s, text=%s)",
                 code_str, strategy, text[:60],
             )
             return ask_cmd.execute(message, args)
@@ -661,6 +681,7 @@ User: "analyze TSLA and NVDA using trend strategy"
         try:
             from src.agent.llm_adapter import LLMToolAdapter
 
+            logger.info("[TG-DIAG] NL意图解析调用LLM: text=%r", text[:120])
             messages = [
                 {"role": "system", "content": CommandDispatcher._NL_PARSE_PROMPT},
                 {"role": "user", "content": text},
@@ -684,6 +705,7 @@ User: "analyze TSLA and NVDA using trend strategy"
         try:
             from src.agent.llm_adapter import LLMToolAdapter
 
+            logger.info("[TG-DIAG] NL意图解析调用LLM(同步): text=%r", text[:120])
             messages = [
                 {"role": "system", "content": CommandDispatcher._NL_PARSE_PROMPT},
                 {"role": "user", "content": text},
@@ -812,7 +834,14 @@ def get_dispatcher() -> CommandDispatcher:
         for command_class in ALL_COMMANDS:
             _dispatcher.register_class(command_class)
 
-        logger.info(f"[Dispatcher] 初始化完成，已注册 {len(_dispatcher._commands)} 个命令")
+        # [TG-DIAG] 初始化即自报代码版本与命令注册表，
+        # 用于实机核对：进程加载的代码版本、dispatcher 实例、真实注册的命令集合。
+        from bot.runtime_info import get_runtime_revision
+        logger.info(
+            "[TG-DIAG] Dispatcher 初始化: 实例=0x%x, 代码版本=%s, 已注册命令(%d)=%s",
+            id(_dispatcher), get_runtime_revision(), len(_dispatcher._commands),
+            sorted(_dispatcher._commands.keys()),
+        )
 
     return _dispatcher
 

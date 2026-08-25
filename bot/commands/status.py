@@ -67,6 +67,12 @@ class StatusCommand(BotCommand):
             "stock_count": len(config.stock_list),
             "stock_list": config.stock_list[:5],  # 只显示前5个
         }
+
+        # 运行版本与命令注册信息：用于实机直接核对部署进程加载的代码版本，
+        # 排查“代码已更新但进程未重启 / 镜像未重建”的版本漂移问题。
+        status["runtime_revision"] = self._collect_runtime_revision()
+        status["runtime_commands"], status["runtime_command_count"] = self._collect_registered_commands()
+        status["telegram_polling_running"] = self._collect_telegram_polling_state()
         
         # AI 配置状态
         llm_channels = getattr(config, "llm_channels", []) or []
@@ -142,6 +148,35 @@ class StatusCommand(BotCommand):
         
         return status
     
+    @staticmethod
+    def _collect_runtime_revision() -> str:
+        """当前进程加载的代码版本（git revision）。"""
+        try:
+            from bot.runtime_info import get_runtime_revision
+            return get_runtime_revision()
+        except Exception as exc:
+            return f"获取失败: {exc}"
+
+    @staticmethod
+    def _collect_registered_commands() -> tuple:
+        """当前 dispatcher 实例真实注册的命令集合。"""
+        try:
+            from bot.dispatcher import get_dispatcher
+            commands = get_dispatcher().list_commands(include_hidden=True)
+            names = sorted(c.name for c in commands)
+            return ", ".join(names), len(names)
+        except Exception as exc:
+            return f"获取失败: {exc}", 0
+
+    @staticmethod
+    def _collect_telegram_polling_state() -> bool:
+        """Telegram 轮询客户端是否在当前进程内运行。"""
+        try:
+            from bot.platforms.telegram_polling import _polling_client
+            return bool(_polling_client and _polling_client.is_running)
+        except Exception:
+            return False
+
     def _format_status(self, status: dict, platform: str) -> str:
         """格式化状态信息"""
         # 状态图标
@@ -154,6 +189,11 @@ class StatusCommand(BotCommand):
             f"🕐 时间: {status['timestamp']}",
             f"🐍 Python: {status['python_version']}",
             f"💻 平台: {status['platform']}",
+            "",
+            "**🧭 运行信息**",
+            f"• 代码版本: {status.get('runtime_revision', 'unknown')}",
+            f"• 已注册命令({status.get('runtime_command_count', 0)}): {status.get('runtime_commands', '-')}",
+            f"• Telegram 轮询: {'✅ 运行中' if status.get('telegram_polling_running') else '❌ 未运行'}",
             "",
             "---",
             "",

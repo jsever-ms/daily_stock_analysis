@@ -197,6 +197,27 @@ def test_status_command_treats_direct_env_provider_model_as_ready():
     assert "系统就绪" in text
 
 
+def test_status_command_reports_runtime_revision_and_registered_commands():
+    """/status 必须自报运行版本与真实命令注册表，用于实机核对代码版本漂移。"""
+    config = Config(stock_list=["600519"])
+    command = StatusCommand()
+
+    status = command._collect_status(config)
+    text = command._format_status(status, "telegram")
+
+    # 代码版本：源码运行时为 git 短 hash，无 .git 环境降级为 unknown，均不应为空
+    assert status["runtime_revision"]
+    assert "代码版本" in text
+    # 命令注册表来自 dispatcher 实例的真实注册结果
+    assert "已注册命令" in text
+    assert status["runtime_command_count"] >= 1
+    assert "help" in status["runtime_commands"]
+    assert "status" in status["runtime_commands"]
+    assert "start" in status["runtime_commands"]
+    # Telegram 轮询状态行始终存在
+    assert "Telegram 轮询" in text
+
+
 def test_status_command_supports_legacy_key_compatibility_without_explicit_litellm_model(monkeypatch, tmp_path):
     # When only legacy OpenAI-compatible keys are configured and LITELLM_MODEL is unset,
     # runtime still infers a usable model path. /status should reflect this compatibility

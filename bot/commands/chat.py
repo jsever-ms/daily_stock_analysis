@@ -90,7 +90,14 @@ class ChatCommand(BotCommand):
             
         user_message = " ".join(args)
         session_id = _resolve_chat_session_id(message)
-        
+
+        # [TG-DIAG] Bot 侧唯一应调用 LLM 聊天的入口：记录实际送给模型的问题文本。
+        # 若这里出现以 "/" 开头的 question，说明上层路由发生了命令穿透。
+        logger.info(
+            "[TG-DIAG] ChatCommand 调用LLM: question=%r, session=%s",
+            user_message, session_id,
+        )
+
         try:
             from src.agent.factory import build_agent_executor
             executor = build_agent_executor(config)

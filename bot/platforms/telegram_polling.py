@@ -244,17 +244,32 @@ class TelegramPollingClient:
     async def handle_update(self, update: dict) -> None:
         message = self.parse_message(update)
         if message is None:
+            logger.debug("[TG-DIAG] update 未解析出文本消息，跳过: %s", str(update)[:120])
             return
+
+        # [TG-DIAG] 真实消息入口：记录原始文本与解析结果。
+        # 若某条命令在日志里完全没有此行，说明消息被另一个进程/实例消费了。
+        logger.info(
+            "[TG-DIAG] 收到消息: msg_id=%s, chat_type=%s, raw_text=%r, content=%r, mentioned=%s",
+            message.message_id, message.chat_type.value, message.raw_content,
+            message.content, message.mentioned,
+        )
 
         dispatcher = self._get_dispatcher()
         try:
             response = await dispatcher.dispatch_async(message)
         except Exception as exc:  # 分发层已兜底，这里仅防御性记录
-            logger.error("[TelegramPolling] 命令分发异常: %s", exc)
+            logger.error("[TG-DIAG] 命令分发异常: msg_id=%s, %s", message.message_id, exc)
             return
 
         if not response or not getattr(response, "text", ""):
+            logger.info("[TG-DIAG] 分发完成: msg_id=%s, 响应为空（不回复）", message.message_id)
             return
+
+        logger.info(
+            "[TG-DIAG] 分发完成: msg_id=%s, 响应长度=%d, 预览=%r",
+            message.message_id, len(response.text), response.text[:80],
+        )
 
         sender = self._get_sender()
         try:
@@ -277,8 +292,15 @@ class TelegramPollingClient:
             try:
                 updates = await asyncio.to_thread(self._get_updates)
             except TelegramPollingError as exc:
-                logger.warning("[TelegramPolling] 拉取更新失败（%s），%.1fs 后重试",
-                               exc, self._retry_delay)
+                # 409 Conflict：同一 Token 被第二个进程消费（旧进程未重启 / 重复部署 / webhook 冲突）
+                conflict_hint = ""
+                if "409" in str(exc) or "onflict" in str(exc) or "ebhook" in str(exc):
+                    conflict_hint = (
+                        "【疑似同一 Token 存在第二个消费者：请检查旧进程是否未重启、"
+                        "是否有重复部署的实例、或曾配置过 webhook】"
+                    )
+                logger.warning("[TelegramPolling] 拉取更新失败（%s%s），%.1fs 后重试",
+                               exc, conflict_hint, self._retry_delay)
                 if self._retry_delay < MAX_RETRY_DELAY:
                     self._retry_delay = min(MAX_RETRY_DELAY, self._retry_delay * 2)
                 await self._sleep(self._retry_delay)
@@ -379,7 +401,14 @@ def start_telegram_polling_background() -> bool:
     _polling_client = client
     _polling_thread = thread
     thread.start()
-    logger.info("[TelegramPolling] Telegram 轮询在后台线程启动")
+
+    # [TG-DIAG] 进程启动即自报代码版本与代码路径，用于核对部署进程加载的代码
+    from bot.runtime_info import get_runtime_revision
+    import os as _os
+    logger.info(
+        "[TG-DIAG] Telegram 轮询在后台线程启动: 代码版本=%s, 代码路径=%s",
+        get_runtime_revision(), _os.path.abspath(__file__),
+    )
     atexit.register(stop_telegram_polling)
     return True
 
