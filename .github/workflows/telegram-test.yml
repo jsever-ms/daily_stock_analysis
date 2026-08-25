@@ -1,0 +1,34 @@
+name: Telegram Test
+
+# 仅允许手动触发，不随任何事件自动运行；不执行股票分析流程。
+on:
+  workflow_dispatch: {}
+
+jobs:
+  telegram-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Secret 同名映射：与正式推送代码读取的环境变量完全一致（src/config.py）
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # 注入当前 workflow 的 commit，供测试消息展示真实运行版本
+      DSA_GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装最小依赖（复用正式 sendMessage 链路所需）
+        run: |
+          pip install --quiet --disable-pip-version-check \
+            requests pydantic pydantic-settings python-dotenv markdown2
+
+      - name: 运行 Telegram 推送快速测试
+        run: |
+          python scripts/test_telegram.py

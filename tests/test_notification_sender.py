@@ -2046,6 +2046,9 @@ class TestTelegramSender(unittest.TestCase):
         self.assertIn("colon=True", log_text)
         self.assertIn("preview=", log_text)
         self.assertNotIn("ABC-REVOKED-TOKEN", log_text)
+        # 状态追踪：getMe 401 被记录且 sendMessage 从未发生（None）
+        self.assertEqual(sender.last_get_me_status, 401)
+        self.assertIsNone(sender.last_send_message_status)
 
     def test_get_me_success_verifies_once_then_sends(self):
         """getMe 成功后缓存验证结果，后续发送不再重复调用 getMe。"""
@@ -2062,6 +2065,20 @@ class TestTelegramSender(unittest.TestCase):
         mock_get.assert_called_once()
         self.assertEqual(mock_post.call_count, 2)
         self.assertIn("/getMe", mock_get.call_args[0][0])
+        self.assertEqual(sender.last_get_me_status, 200)
+        self.assertEqual(sender.last_send_message_status, 200)
+
+    def test_verify_token_records_network_error_as_none(self):
+        """getMe 网络错误时 last_get_me_status 应为 None（网络失败单独标明）。"""
+        import requests as _requests
+        with mock.patch("src.notification_sender.telegram_sender.requests.get") as mock_get:
+            mock_get.side_effect = _requests.exceptions.Timeout("timeout")
+            cfg = _config(telegram_bot_token="123456:ABC", telegram_chat_id="CHAT")
+            sender = TelegramSender(cfg)
+
+            # 网络错误按设计不阻塞（返回 True），但状态应记录为 None
+            self.assertTrue(sender.verify_token())
+            self.assertIsNone(sender.last_get_me_status)
 
     def test_get_me_network_error_does_not_block_send(self):
         """getMe 网络异常不阻塞 sendMessage（避免误伤网络抖动场景）。"""

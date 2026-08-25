@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] `/status` 新增“运行信息”区块：自报当前进程加载的代码版本（git revision）、dispatcher 真实注册的命令列表与数量、Telegram 轮询运行状态；启动日志同步自报代码版本与代码路径，用于核对部署进程是否存在版本漂移（旧进程未重启 / 镜像未重建）。
 - [改进] Telegram 发送前增加 getMe 身份预验证：用同一 Token 调用 getMe，401 时明确输出「Telegram Token 无效或未正确加载」并阻止本次 sendMessage（含发送指引），成功后缓存结果不重复验证；网络异常不阻塞发送。用于快速定位 Token 撤销/Secret 未更新类 401 问题。
 - [改进] 增加 Token 安全诊断日志（Python sender 与 GitHub Actions workflow 双侧）：只输出 present/len/space/newline/quote/colon 与前 4 后 4 位打码预览（如 `preview=1234****AbCd`），禁止完整 Token 进日志；检测 Secret 粘贴事故（多余空格、CRLF 换行、引号包裹、缺冒号）。
+- [新功能] 新增独立 Telegram 快速测试脚本 `scripts/test_telegram.py`：5~10 秒内复用正式配置（`src.config.get_config`）与正式 `TelegramSender` 发送链路，依次执行 getMe 验证与 sendMessage，向 Telegram 发送「✅ Telegram 推送测试成功」（含时间、运行环境、git commit）；只输出 Token 概要（存在性/长度/空格/换行/冒号）与 Chat ID 存在性、getMe/sendMessage 真实 HTTP 状态，明确区分 401/400/403/404/网络错误，完整 Token 永不进日志。
+- [新功能] 新增手动 workflow `.github/workflows/telegram-test.yml`：仅 `workflow_dispatch` 触发、不运行股票分析，将 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` Secret 同名注入后执行 Telegram 测试脚本。
+- [改进] `TelegramSender` 记录最近一次 getMe/sendMessage 真实 HTTP 状态（`last_get_me_status` / `last_send_message_status`，网络失败为 `None`），并新增公开 `verify_token()` 方法复用同一底层验证逻辑。
 
 ## [3.31.0] - 2026-08-23
 

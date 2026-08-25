@@ -34,6 +34,11 @@ class TelegramSender:
         }
         # Token 有效性缓存：getMe 验证成功后不再重复验证，避免每次发送多一次 API 调用
         self._token_verified: bool = False
+        # 最近一次 getMe / sendMessage 的真实 HTTP 状态（供测试脚本与诊断输出使用）
+        # - None 表示网络层失败（连接超时/拒绝）或尚未请求
+        # - 其余为 Telegram API 返回的具体 HTTP 状态码
+        self.last_get_me_status: Optional[int] = None
+        self.last_send_message_status: Optional[int] = None
 
     @staticmethod
     def _safe_token_preview(token: str) -> str:
@@ -88,8 +93,11 @@ class TelegramSender:
         try:
             response = requests.get(api_url, timeout=10)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            self.last_get_me_status = None
             logger.warning(f"Telegram getMe 验证请求异常（不阻塞发送）: {e}")
             return True
+
+        self.last_get_me_status = response.status_code
 
         if response.status_code == 200 and response.json().get('ok'):
             username = response.json().get('result', {}).get('username', 'unknown')
@@ -113,6 +121,17 @@ class TelegramSender:
             f"（不阻塞发送）: {response.text[:200]}"
         )
         return True
+
+    def verify_token(self) -> bool:
+        """公开的 Token 验证入口：复用 ``_verify_token_via_get_me`` 同一底层逻辑。
+
+        供独立测试脚本调用；验证后可通过 ``self.last_get_me_status`` 获取真实 HTTP 状态。
+        """
+        bot_token = self._telegram_config['bot_token']
+        if not bot_token:
+            self.last_get_me_status = None
+            return False
+        return self._verify_token_via_get_me(bot_token)
 
     def _is_telegram_configured(self) -> bool:
         """检查 Telegram 配置是否完整"""
@@ -239,9 +258,11 @@ class TelegramSender:
                     time.sleep(delay)
                     continue
                 else:
+                    self.last_send_message_status = None
                     logger.error(f"Telegram request failed after {max_retries} attempts: {e}")
                     return False
 
+            self.last_send_message_status = response.status_code
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
