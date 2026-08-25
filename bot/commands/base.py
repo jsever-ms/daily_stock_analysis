@@ -13,6 +13,18 @@ from typing import List, Optional
 
 from bot.models import BotMessage, BotResponse
 
+# /help 分组类别（顺序即展示顺序）
+CATEGORY_STOCK = "股票分析"
+CATEGORY_AI = "AI 功能"
+CATEGORY_OTHER = "其他"
+
+# 分组展示时的 emoji 图标
+CATEGORY_EMOJI = {
+    CATEGORY_STOCK: "📊",
+    CATEGORY_AI: "🤖",
+    CATEGORY_OTHER: "🛠",
+}
+
 
 class BotCommand(ABC):
     """
@@ -77,6 +89,37 @@ class BotCommand(ABC):
         例如 "/analyze <股票代码>"
         """
         pass
+
+    @property
+    def examples(self) -> List[str]:
+        """
+        命令示例列表（用于帮助信息）
+
+        每个元素是一条完整命令串，例如 ["/analyze 600519", "/analyze 600519 full"]。
+        /help 主列表会取第一条示例的命令参数作为快捷示例，/help <命令> 会完整展示。
+        """
+        return []
+
+    @property
+    def category(self) -> str:
+        """
+        命令所属分组（用于 /help 分类展示）
+
+        取值参考 ``CATEGORY_STOCK`` / ``CATEGORY_AI`` / ``CATEGORY_OTHER``。
+        默认归入"其他"分组。
+        """
+        return CATEGORY_OTHER
+
+    @property
+    def menu_label(self) -> str:
+        """
+        Telegram 底部菜单中展示的文案
+
+        默认与 ``description`` 一致；需要更精简/带 emoji 的菜单文案时，
+        在具体命令里覆盖。菜单的命令集合与顺序由 polling 启动时从
+        Command Registry 推导，避免手工维护第二份列表。
+        """
+        return self.description
 
     @property
     def hidden(self) -> bool:

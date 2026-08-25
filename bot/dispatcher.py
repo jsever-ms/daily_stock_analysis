@@ -312,7 +312,7 @@ class CommandDispatcher:
             # 未知命令拦截：绝不放行到 LLM，统一回复格式
             return cmd_name, args, None, BotResponse.text_response(
                 f"⚠️ 未知命令：/{cmd_name}\n"
-                f"发送 {self.command_prefix}help 查看当前可用命令。"
+                f"发送 {self.command_prefix}help 查看可用功能。"
             )
 
         if command.admin_only and not self.is_admin(message.user_id):
@@ -337,7 +337,7 @@ class CommandDispatcher:
             if self._looks_like_command(message.content, message.raw_content):
                 return BotResponse.text_response(
                     f"⚠️ 未知命令：{self._extract_command_text(message)}\n"
-                    f"发送 {self.command_prefix}help 查看当前可用命令。"
+                    f"发送 {self.command_prefix}help 查看可用功能。"
                 )
             nl_result = self._try_nl_routing_sync(message)
             if nl_result is not None:
@@ -385,7 +385,7 @@ class CommandDispatcher:
                 )
                 return BotResponse.text_response(
                     f"⚠️ 未知命令：{self._extract_command_text(message)}\n"
-                    f"发送 {self.command_prefix}help 查看当前可用命令。"
+                    f"发送 {self.command_prefix}help 查看可用功能。"
                 )
             logger.info(
                 "[TG-DIAG] 非命令消息 → 尝试NL路由: content=%r, raw=%r, dispatcher@0x%x",

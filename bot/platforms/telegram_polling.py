@@ -40,6 +40,21 @@ MAX_RETRY_DELAY = 60.0
 
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
+# Telegram 底部“菜单”常用命令（顺序即展示顺序）。
+# 只放常用命令；/history、/strategies 等低频命令不进菜单，仍可通过 /help 使用。
+# 这里只维护“名字 + 顺序”，description 与命令集合都以 Command Registry 为准：
+# 注册表里已删除的命令会被自动跳过，避免“代码已改动但菜单还是旧的”。
+_MENU_COMMAND_NAMES: tuple = (
+    "analyze",
+    "ask",
+    "batch",
+    "market",
+    "research",
+    "chat",
+    "status",
+    "help",
+)
+
 
 class TelegramPollingError(Exception):
     """Telegram API 返回业务错误的封装"""
@@ -150,6 +165,53 @@ class TelegramPollingClient:
 
         updates = self._request("getUpdates", **params)
         return updates if isinstance(updates, list) else []
+
+    # ------------------------------------------------------------------ #
+    #  菜单自动同步（setMyCommands）                                       #
+    # ------------------------------------------------------------------ #
+
+    def _build_menu_commands(self) -> List[dict]:
+        """从 Command Registry 推导 Telegram 菜单命令列表（同一数据源）。
+
+        只按 ``_MENU_COMMAND_NAMES`` 的名字+顺序取命令，description 取命令的
+        ``menu_label``；注册表中不存在的命令自动跳过并告警。
+        """
+        dispatcher = self._get_dispatcher()
+        menu: List[dict] = []
+        for name in _MENU_COMMAND_NAMES:
+            cmd = dispatcher.get_command(name)
+            if cmd is None:
+                logger.warning(
+                    "[TelegramPolling] 菜单命令 %r 未在 Command Registry 中注册，跳过",
+                    name,
+                )
+                continue
+            if getattr(cmd, "hidden", False) or getattr(cmd, "admin_only", False):
+                continue
+            menu.append({"command": name, "description": cmd.menu_label})
+        return menu
+
+    def sync_commands(self) -> bool:
+        """调用 Telegram Bot API setMyCommands 自动同步底部菜单。
+
+        失败只记录 warning，绝不影响轮询启动。
+        """
+        import json as _json
+
+        try:
+            menu = self._build_menu_commands()
+            if not menu:
+                logger.warning("[TelegramPolling] 菜单命令列表为空，跳过 setMyCommands")
+                return False
+            self._request("setMyCommands", commands=_json.dumps(menu, ensure_ascii=False))
+            logger.info(
+                "[TelegramPolling] setMyCommands 同步菜单成功 (%d 个): %s",
+                len(menu), [m["command"] for m in menu],
+            )
+            return True
+        except TelegramPollingError as exc:
+            logger.warning("[TelegramPolling] setMyCommands 同步菜单失败（不影响轮询）: %s", exc)
+            return False
 
     # ------------------------------------------------------------------ #
     #  update -> BotMessage                                                #
@@ -288,6 +350,8 @@ class TelegramPollingClient:
     async def run_forever(self) -> None:
         """阻塞式长轮询主循环；断线时指数退避重连，直到 ``stop()``。"""
         logger.info("[TelegramPolling] Telegram 轮询客户端启动")
+        # 启动即自动同步底部菜单（setMyCommands）；失败仅告警，不阻塞轮询
+        await asyncio.to_thread(self.sync_commands)
         while self.is_running:
             try:
                 updates = await asyncio.to_thread(self._get_updates)

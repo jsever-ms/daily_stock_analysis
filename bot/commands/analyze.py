@@ -11,7 +11,7 @@ import re
 import logging
 from typing import List, Optional
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_STOCK
 from bot.models import BotMessage, BotResponse
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
@@ -39,11 +39,23 @@ class AnalyzeCommand(BotCommand):
     
     @property
     def description(self) -> str:
-        return "分析指定股票"
-    
+        return "分析一只股票"
+
     @property
     def usage(self) -> str:
         return "/analyze <股票代码> [full]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/analyze 600519", "/analyze 600519 full"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_STOCK
+
+    @property
+    def menu_label(self) -> str:
+        return "📊 分析单只股票"
     
     def validate_args(self, args: List[str]) -> Optional[str]:
         """验证参数"""

@@ -36,6 +36,11 @@ class StartCommand(BotCommand):
     def usage(self) -> str:
         return "/start"
 
+    @property
+    def hidden(self) -> bool:
+        """/start 是平台入口命令，不显示在 /help 列表与 Telegram 菜单中。"""
+        return True
+
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行开始命令"""
         return BotResponse.markdown_response(

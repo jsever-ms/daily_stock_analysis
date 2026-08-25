@@ -874,17 +874,44 @@ def _format_telegram_markdown_unprotected(content: str) -> str:
 
 
 def _escape_telegram_non_link_markdown_chars(content: str) -> str:
-    """Escape Telegram Markdown link metacharacters outside valid links."""
+    """Escape Telegram legacy-Markdown metacharacters outside valid links.
+
+    Legacy Markdown 保留字符为 ``_ * ` [``。本函数只转义真正会改变渲染、且不是
+    本模块有意生成的字符：
+
+    - ``*`` **不转义**：``_format_telegram_markdown_unprotected`` 特意用 ``*``
+      生成加粗（``# heading`` -> ``*heading*``、``**bold**`` -> ``*bold*``），
+      转义会把加粗破坏成字面星号。
+    - ``[ ] ( )`` **不转义**：完整链接已通过 ``@@DSA_TELEGRAM_LINK_N@@`` 提取保护，
+      剩余的 ``[ ] ( )`` 只是普通文本。实机曾出现 ``/ask <股票代码[,代码2,...]>
+      [技能名称]`` 这类把转义后的方括号原样展示给用户的反斜杠乱码
+      （``]``/``(``/``)`` 不是 legacy Markdown 的可识别转义）。
+    - ``_`` 与 `` ` `` **转义**：它们是 legacy Markdown 的斜体/行内代码定界符，
+      且本模块不会主动生成，出现在正文里应作为字面量展示。
+    """
 
     links: list[str] = []
+    # 统一保护所有 DSA 占位符（链接 @@DSA_TELEGRAM_LINK_N@@、围栏代码块
+    # @@DSA_FENCED_CODE_BLOCK_N@@ 等）：占位符内的 _ 不能被转义，否则无法还原。
+    placeholder_re = re.compile(r"@@DSA_[A-Z_]+_\d+@@")
 
     def _save_link(match: re.Match) -> str:
         links.append(match.group(0))
         return f"@@DSA_TELEGRAM_LINK_{len(links) - 1}@@"
 
     result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _save_link, content)
-    for char in ("[", "]", "(", ")"):
-        result = result.replace(char, f"\\{char}")
+
+    def _escape_segment(match: re.Match) -> str:
+        segment = match.group(0)
+        # 链接占位符整体透传：避免把占位符里的 _ 转义掉，导致后续无法还原链接
+        if placeholder_re.fullmatch(segment):
+            return segment
+        for char in ("_", "`"):
+            segment = segment.replace(char, f"\\{char}")
+        return segment
+
+    # 按“占位符整体”或“单个字符”逐段处理；未匹配的换行等字符原样保留
+    result = re.sub(rf"{placeholder_re.pattern}|.", _escape_segment, result)
 
     for index, link in enumerate(links):
         result = result.replace(f"@@DSA_TELEGRAM_LINK_{index}@@", link)

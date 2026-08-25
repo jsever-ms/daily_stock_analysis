@@ -12,7 +12,7 @@ import threading
 import uuid
 from typing import List
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_STOCK
 from bot.models import BotMessage, BotResponse
 
 logger = logging.getLogger(__name__)
@@ -40,10 +40,22 @@ class BatchCommand(BotCommand):
     @property
     def description(self) -> str:
         return "批量分析自选股"
-    
+
     @property
     def usage(self) -> str:
         return "/batch [数量]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/batch", "/batch 3"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_STOCK
+
+    @property
+    def menu_label(self) -> str:
+        return "📚 批量分析自选股"
     
     @property
     def admin_only(self) -> bool:

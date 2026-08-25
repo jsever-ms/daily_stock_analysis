@@ -36,24 +36,32 @@ class StatusCommand(BotCommand):
     
     @property
     def description(self) -> str:
-        return "显示系统状态"
-    
+        return "查看机器人、AI、数据源状态"
+
     @property
     def usage(self) -> str:
-        return "/status"
+        return "/status [detail]"
+
+    @property
+    def menu_label(self) -> str:
+        return "🟢 系统状态"
     
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行状态命令"""
         from src.config import get_config
-        
+
         config = get_config()
-        
+
         # 收集状态信息
         status_info = self._collect_status(config)
-        
-        # 格式化输出
-        text = self._format_status(status_info, message.platform)
-        
+
+        # 默认精简输出，/status detail 才输出完整诊断
+        detailed = bool(args and args[0].lower() in ("detail", "full", "详细", "完整"))
+        if detailed:
+            text = self._format_status_detail(status_info, message.platform)
+        else:
+            text = self._format_status_summary(status_info)
+
         return BotResponse.markdown_response(text)
     
     def _collect_status(self, config) -> dict:
@@ -116,6 +124,11 @@ class StatusCommand(BotCommand):
         status["search_serpapi"] = len(config.serpapi_keys) > 0
         status["search_minimax"] = len(config.minimax_api_keys) > 0
         status["search_searxng"] = config.has_searxng_enabled()
+
+        # 行情数据：数据源优先级非空即视为已配置（免费源无需 key，腾讯/新浪默认可用）
+        market_priority = (getattr(config, "realtime_source_priority", "") or "").strip()
+        status["market_data_available"] = bool(market_priority)
+        status["market_data_sources"] = [s.strip() for s in market_priority.split(",") if s.strip()]
         
         # 通知渠道状态
         status["notify_wechat"] = bool(config.wechat_webhook_url)
@@ -177,8 +190,54 @@ class StatusCommand(BotCommand):
         except Exception:
             return False
 
-    def _format_status(self, status: dict, platform: str) -> str:
-        """格式化状态信息"""
+    def _format_status_summary(self, status: dict) -> str:
+        """精简状态（默认）：只显示手机端最关心的几行。
+
+        完整的命令注册、通知渠道、搜索服务明细等放到 ``/status detail``。
+        """
+        def ok(enabled: bool) -> str:
+            return "✅" if enabled else "❌"
+
+        # AI 模型摘要：优先 LLM 渠道名，其次 legacy provider key，最后主模型 provider
+        if status.get("ai_channels"):
+            ai_models = " / ".join(status["ai_channels"])
+        else:
+            present_keys = [name for name, on in status["ai_legacy_keys"].items() if on]
+            if present_keys:
+                ai_models = " / ".join(present_keys)
+            elif status.get("ai_primary_model"):
+                ai_models = status["ai_primary_model"].split("/", 1)[0]
+            else:
+                ai_models = "未配置"
+
+        # 新闻搜索：任一搜索源可用即为 ✅
+        search_any = any(
+            status.get(key)
+            for key in (
+                "search_bocha", "search_tavily", "search_brave",
+                "search_serpapi", "search_minimax", "search_searxng",
+            )
+        )
+
+        telegram_status = "✅ 在线" if status.get("telegram_polling_running") else "❌ 离线"
+
+        lines = [
+            "🟢 **系统状态**",
+            "",
+            f"Telegram：{telegram_status}",
+            f"AI模型：{ai_models}",
+            f"行情数据：{ok(status.get('market_data_available'))}",
+            f"新闻搜索：{ok(search_any)}",
+            f"自选股：{status['stock_count']} 只",
+            f"代码版本：{status.get('runtime_revision', 'unknown')}",
+            "",
+            "发送 /status detail 查看详细诊断",
+        ]
+
+        return "\n".join(lines)
+
+    def _format_status_detail(self, status: dict, platform: str) -> str:
+        """完整诊断（/status detail）：保留全部维度明细。"""
         # 状态图标
         def icon(enabled: bool) -> str:
             return "✅" if enabled else "❌"

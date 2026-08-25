@@ -62,7 +62,11 @@ class HistoryCommand(BotCommand):
 
     @property
     def usage(self) -> str:
-        return "/history [session_id | clear]"
+        return "/history [会话ID|clear]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/history", "/history clear"]
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """Execute the history command."""

@@ -34,7 +34,7 @@ def test_status_command_reports_unified_llm_and_notification_channels():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is True
     assert "主模型: deepseek/deepseek-v4-flash" in text
@@ -51,7 +51,7 @@ def test_status_command_warns_when_no_llm_source_configured():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is False
     assert "主模型: 未配置" in text
@@ -68,7 +68,7 @@ def test_status_command_does_not_treat_managed_model_name_as_ready():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is False
     assert "AI 服务未配置" in text
@@ -99,7 +99,7 @@ def test_status_command_keeps_channel_mode_priority_over_legacy_keys():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is False
     assert "AI 服务未配置" in text
@@ -130,7 +130,7 @@ def test_status_command_requires_primary_model_in_configured_router_models():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is False
     assert "AI 服务未配置" in text
@@ -155,7 +155,7 @@ def test_status_command_requires_primary_model_for_yaml_router_models():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_yaml"] is True
     assert status["ai_available"] is False
@@ -174,7 +174,7 @@ def test_status_command_does_not_treat_invalid_yaml_path_as_active():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_yaml"] is False
     assert status["ai_available"] is False
@@ -191,7 +191,7 @@ def test_status_command_treats_direct_env_provider_model_as_ready():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     assert status["ai_available"] is True
     assert "系统就绪" in text
@@ -203,7 +203,7 @@ def test_status_command_reports_runtime_revision_and_registered_commands():
     command = StatusCommand()
 
     status = command._collect_status(config)
-    text = command._format_status(status, "telegram")
+    text = command._format_status_detail(status, "telegram")
 
     # 代码版本：源码运行时为 git 短 hash，无 .git 环境降级为 unknown，均不应为空
     assert status["runtime_revision"]
@@ -249,7 +249,7 @@ def test_status_command_supports_legacy_key_compatibility_without_explicit_litel
         command = StatusCommand()
 
         status = command._collect_status(config)
-        text = command._format_status(status, "telegram")
+        text = command._format_status_detail(status, "telegram")
 
         assert status["ai_available"] is True
         assert "主模型: openai/gpt-4o-mini" in text

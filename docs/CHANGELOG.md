@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] `TelegramSender` 记录最近一次 getMe/sendMessage 真实 HTTP 状态（`last_get_me_status` / `last_send_message_status`，网络失败为 `None`），并新增公开 `verify_token()` 方法复用同一底层验证逻辑。
 - [修复] Telegram 快速测试脚本改为真正的最小依赖：`telegram_sender.py` 的 `Config` 改为仅类型引用（运行时不再导入 `src.config`，避免连带 llm/scheduler/股票行情等重型模块）；测试脚本通过 importlib 按文件路径直接加载 `telegram_sender.py` / `runtime_info.py`，刻意跳过 `src.notification_sender/__init__.py`（会导入全部发送器，其中 Feishu 依赖未安装的 `lark_oapi`）。Token/Chat ID 仍读取与正式代码完全一致的 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`，workflow 依赖缩至 `requests` + `markdown2`。
 - [测试] 新增 `tests/test_telegram_test_script.py` 回归测试：在屏蔽 `src.config` / `src.notification_sender` 导入链的前提下验证脚本仍可完成 getMe → sendMessage，并校验状态输出顺序（getMe 先于 sendMessage）、Token 不泄露、401/缺配置/含空格等失败路径。
+- [新功能] Telegram 底部「菜单」改为程序自动注册：启动 Long Polling 时通过 Bot API `setMyCommands` 自动同步常用命令（`/analyze`、`/ask`、`/batch`、`/market`、`/research`、`/chat`、`/status`、`/help`），命令集合与顺序与 Command Registry 同源（`menu_label`），注册表删除/隐藏命令后自动跳过，不再要求用户在 BotFather 手工维护；同步失败仅记录 warning，不影响轮询启动。
+- [改进] `/help` 重写为手机友好分组展示（📊 股票分析 / 🤖 AI 功能 / 🛠 其他），主列表按分组列出命令与第一条快捷示例，末尾引导 `/help <命令名>` 查看详细说明；详细页（命令、别名、用法、示例、权限）全部来自真实 Command Registry，新增命令只需维护 `BotCommand` 元数据一处。
+- [修复] Telegram 命令详细帮助中的 Markdown 转义乱码：`/help ask` 等不再把 `<股票代码[,代码2,...]>`、`[技能名称]`、`(需开启 Agent 模式)` 中的 `[ ] ( )` 转义成带反斜杠的字符串展示给用户；转义逻辑只处理 legacy Markdown 中真正改变渲染的字符，且统一保护链接与围栏代码块占位符不被误转义。
+- [修复] `/strategies` 移除过期 import（`DEFAULT_AGENT_SKILLS` from `src.agent.factory`），改为读取当前系统真实技能注册表：可用技能来自 `SkillManager.list_skills()`，默认激活集合复用 `get_default_active_skill_ids()` 推导，不重复维护第二份注册表。
+- [改进] `/status` 默认精简为手机友好的概要视图（Telegram 在线状态、AI 模型、行情数据、新闻搜索、自选股数量、代码版本），完整诊断（命令注册、通知渠道、搜索服务明细等）移到 `/status detail` 展示。
+- [改进] 未知命令提示语优化为「⚠️ 未知命令：/xxx\n发送 /help 查看可用功能。」，仍由程序拦截，绝不透传 LLM。
 
 ## [3.31.0] - 2026-08-23
 

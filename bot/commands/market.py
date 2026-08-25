@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Any, List, Optional
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_STOCK
 from bot.models import BotMessage, BotResponse
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,23 @@ class MarketCommand(BotCommand):
 
     @property
     def description(self) -> str:
-        return "大盘复盘分析"
+        return "查看大盘复盘"
 
     @property
     def usage(self) -> str:
         return "/market"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/market"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_STOCK
+
+    @property
+    def menu_label(self) -> str:
+        return "🌏 大盘复盘"
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行大盘复盘命令"""

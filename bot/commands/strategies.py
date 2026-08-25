@@ -33,11 +33,15 @@ class StrategiesCommand(BotCommand):
 
     @property
     def description(self) -> str:
-        return "查看可用交易策略"
+        return "查看可用分析策略"
 
     @property
     def usage(self) -> str:
         return "/strategies [active]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/strategies", "/strategies active"]
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """Execute the strategies list command."""
@@ -45,19 +49,32 @@ class StrategiesCommand(BotCommand):
 
         try:
             from src.agent.factory import get_skill_manager
+            from src.agent.skills.defaults import get_default_active_skill_ids
             from src.config import get_config
 
             config = get_config()
             sm = get_skill_manager(config)
-            from src.agent.factory import DEFAULT_AGENT_SKILLS
 
-            # Derive activation status from config without mutating the skill
-            # manager — this is a read-only listing command.
-            configured_active: set = set(config.agent_skills or DEFAULT_AGENT_SKILLS)
-
-            all_skills = sm.list_skills()
+            all_skills = list(sm.list_skills())
             if not all_skills:
                 return BotResponse.text_response("📋 暂无可用策略。请检查 strategies/ 目录。")
+
+            # 真实技能注册表：以 SkillManager 加载到的技能为准，激活集合
+            # 复用系统的默认激活技能推导（与 Agent 运行时的 resolve_skill_prompt_state 同源），
+            # 不在这里重复维护一份 DEFAULT_AGENT_SKILLS。
+            available_ids = {str(getattr(s, "name", "")).strip() for s in all_skills if str(getattr(s, "name", "")).strip()}
+            configured_skills = getattr(config, "agent_skills", None)
+            if configured_skills == []:
+                configured_skills = None
+            if configured_skills:
+                configured_active: set = set(configured_skills)
+            else:
+                configured_active = set(
+                    get_default_active_skill_ids(
+                        all_skills,
+                        available_skill_ids=available_ids or None,
+                    )
+                )
 
             skills = all_skills
             if show_active_only:

@@ -13,7 +13,7 @@ import re
 import time
 from typing import List, Optional
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_AI
 from bot.models import BotMessage, BotResponse
 from src.config import get_config
 
@@ -44,11 +44,23 @@ class ResearchCommand(BotCommand):
 
     @property
     def description(self) -> str:
-        return "Deep research on a stock or market topic"
+        return "深度研究"
 
     @property
     def usage(self) -> str:
-        return "/research <stock_code|topic> [specific question]"
+        return "/research <股票代码|主题> [问题]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/research 600519 最近有哪些风险", "/research 新能源板块 前景分析"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_AI
+
+    @property
+    def menu_label(self) -> str:
+        return "🔎 深度研究"
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         if not args:

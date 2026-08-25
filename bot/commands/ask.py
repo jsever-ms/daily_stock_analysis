@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_AI
 from bot.models import BotMessage, BotResponse
 from data_provider.base import canonical_stock_code
 from src.config import get_config
@@ -41,11 +41,23 @@ class AskCommand(BotCommand):
 
     @property
     def description(self) -> str:
-        return "使用 Agent 技能分析股票"
+        return "AI Agent 智能问股"
 
     @property
     def usage(self) -> str:
         return "/ask <股票代码[,代码2,...]> [技能名称]"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/ask 600519", "/ask 600519,000858 缠论"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_AI
+
+    @property
+    def menu_label(self) -> str:
+        return "🤖 AI 智能问股"
 
     def _merge_code_args(self, args: List[str]) -> tuple[str, List[str]]:
         """Merge stock code arguments separated by commas or explicit ``vs`` markers."""

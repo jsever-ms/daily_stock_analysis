@@ -270,7 +270,7 @@ class TestUnknownCommandGuard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未知命令", result.text)
         self.assertIn("/abcdefg", result.text)
         self.assertIn("/help", result.text)
-        self.assertIn("查看当前可用命令", result.text)
+        self.assertIn("查看可用功能", result.text)
         nl_mock.assert_not_awaited()
 
     async def test_unknown_command_with_args_is_still_unknown(self):

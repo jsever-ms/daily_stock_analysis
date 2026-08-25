@@ -6,7 +6,7 @@ Chat command for free-form conversation with the Agent.
 import logging
 from typing import List, Optional
 
-from bot.commands.base import BotCommand
+from bot.commands.base import BotCommand, CATEGORY_AI
 from bot.models import BotMessage, BotResponse, ChatType
 from src.config import get_config
 
@@ -58,11 +58,23 @@ class ChatCommand(BotCommand):
         
     @property
     def description(self) -> str:
-        return "与 AI 助手进行自由对话 (需开启 Agent 模式)"
-        
+        return "AI 自由对话"
+
     @property
     def usage(self) -> str:
         return "/chat <问题>"
+
+    @property
+    def examples(self) -> List[str]:
+        return ["/chat 贵州茅台现在怎么看"]
+
+    @property
+    def category(self) -> str:
+        return CATEGORY_AI
+
+    @property
+    def menu_label(self) -> str:
+        return "💬 AI 自由对话"
         
     @property
     def aliases(self) -> list[str]:

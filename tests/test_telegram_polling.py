@@ -196,6 +196,95 @@ class TestGetUpdates(unittest.TestCase):
         self.assertEqual(kwargs["offset"], 100)
 
 
+class TestMenuSync(unittest.TestCase):
+    """/help 底部菜单必须由 setMyCommands 自动同步，且与 Command Registry 同源。"""
+
+    def test_build_menu_commands_returns_registry_commands_in_order(self):
+        from bot.platforms.telegram_polling import _MENU_COMMAND_NAMES, TelegramPollingClient
+
+        client = TelegramPollingClient(SimpleNamespace(telegram_bot_token="T"))
+        menu = client._build_menu_commands()
+
+        names = [m["command"] for m in menu]
+        # 顺序与 _MENU_COMMAND_NAMES 完全一致
+        self.assertEqual(names, list(_MENU_COMMAND_NAMES))
+        # 每个命令都带来自 Registry 的 menu_label 描述
+        for item in menu:
+            cmd = client._get_dispatcher().get_command(item["command"])
+            self.assertEqual(item["description"], cmd.menu_label)
+            self.assertGreater(len(item["description"]), 0)
+
+    def test_build_menu_commands_skips_unregistered_and_hidden(self):
+        from bot.platforms.telegram_polling import TelegramPollingClient
+        from bot.commands.base import BotCommand
+        from bot.models import BotResponse
+
+        class _HiddenProbe(BotCommand):
+            @property
+            def name(self):
+                return "_hidden_probe"
+
+            @property
+            def aliases(self):
+                return []
+
+            @property
+            def description(self):
+                return "hidden probe"
+
+            @property
+            def usage(self):
+                return "/_hidden_probe"
+
+            @property
+            def hidden(self):
+                return True
+
+            def execute(self, message, args):
+                return BotResponse.text_response("x")
+
+        client = TelegramPollingClient(SimpleNamespace(telegram_bot_token="T"))
+        # 未注册命令 + hidden 命令均不应出现在菜单中；用唯一探针名避免污染真实命令
+        with mock.patch(
+            "bot.platforms.telegram_polling._MENU_COMMAND_NAMES",
+            ("analyze", "does_not_exist", "_hidden_probe"),
+        ):
+            dispatcher = client._get_dispatcher()
+            dispatcher._commands["_hidden_probe"] = _HiddenProbe()
+            try:
+                menu = client._build_menu_commands()
+                names = [m["command"] for m in menu]
+                self.assertEqual(names, ["analyze"])
+            finally:
+                dispatcher._commands.pop("_hidden_probe", None)
+
+    def test_sync_commands_calls_set_my_commands(self):
+        from bot.platforms.telegram_polling import TelegramPollingClient
+
+        client = TelegramPollingClient(SimpleNamespace(telegram_bot_token="T"))
+        client._request = mock.Mock(return_value=True)
+
+        self.assertTrue(client.sync_commands())
+        args, kwargs = client._request.call_args
+        self.assertEqual(args[0], "setMyCommands")
+        self.assertIn("commands", kwargs)
+
+        import json as _json
+        payload = _json.loads(kwargs["commands"])
+        names = [p["command"] for p in payload]
+        from bot.platforms.telegram_polling import _MENU_COMMAND_NAMES
+        self.assertEqual(names, list(_MENU_COMMAND_NAMES))
+
+    def test_sync_commands_failure_only_warns(self):
+        from bot.platforms.telegram_polling import TelegramPollingClient, TelegramPollingError
+
+        client = TelegramPollingClient(SimpleNamespace(telegram_bot_token="T"))
+        client._request = mock.Mock(side_effect=TelegramPollingError("network down"))
+
+        # 失败只返回 False，不抛出异常（不阻塞轮询启动）
+        self.assertFalse(client.sync_commands())
+
+
 class TestStartGuard(unittest.TestCase):
     def test_missing_token_skips(self):
         with mock.patch("src.config.get_config",

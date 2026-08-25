@@ -450,9 +450,22 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
 
         result = format_telegram_markdown(text)
 
-        self.assertIn("*\\[P4\\] 日报*", result)
-        self.assertIn("- 600519：\\[P4\\] 强势 \\(观察\\)", result)
+        # 方括号/圆括号不是 legacy Markdown 可识别转义：必须原样透传，绝不能出现 \ 乱码
+        self.assertIn("*[P4] 日报*", result)
+        self.assertNotIn("\\[", result)
+        self.assertNotIn("\\]", result)
+        self.assertNotIn("\\(", result)
+        self.assertNotIn("\\)", result)
+        self.assertIn("- 600519：[P4] 强势 (观察)", result)
+        # 完整链接仍然保留
         self.assertIn("[详情](https://example.com/report)", result)
+
+    def test_telegram_formatter_preserves_brackets_in_usage_help(self):
+        # 回归：/help ask 中的 [技能名称] 等用法说明不得出现反斜杠乱码
+        text = "用法：/ask <股票代码[,代码2,...]> [技能名称]"
+        result = format_telegram_markdown(text)
+        self.assertIn("/ask <股票代码[,代码2,...]> [技能名称]", result)
+        self.assertNotIn("\\", result)
 
     def test_slack_formatter_uses_mrkdwn_links_and_tables(self):
         text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n[详情](https://example.com/report)"
