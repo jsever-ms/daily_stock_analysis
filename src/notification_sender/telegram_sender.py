@@ -32,6 +32,87 @@ class TelegramSender:
             'chat_id': getattr(config, 'telegram_chat_id', None),
             'message_thread_id': getattr(config, 'telegram_message_thread_id', None),
         }
+        # Token 有效性缓存：getMe 验证成功后不再重复验证，避免每次发送多一次 API 调用
+        self._token_verified: bool = False
+
+    @staticmethod
+    def _safe_token_preview(token: str) -> str:
+        """生成 Token 安全预览：只保留前 4 位与后 4 位，中间打码。
+
+        禁止把完整 Token 打进日志。
+        """
+        if not token:
+            return ""
+        if len(token) <= 8:
+            return "*" * len(token)
+        return f"{token[:4]}{'*' * (len(token) - 8)}{token[-4:]}"
+
+    def _log_token_diagnostics(self, bot_token: str) -> None:
+        """打印 Token 安全诊断信息（不含完整值），用于定位 401 类认证问题。
+
+        覆盖常见 Secret 粘贴事故：前后空格、尾随换行（CRLF 粘贴）、
+        引号包裹、缺少冒号（标准 Bot Token 为 ``<bot_id>:<hash>``）。
+        """
+        has_space = " " in bot_token
+        has_newline = any(c in bot_token for c in ("\n", "\r"))
+        has_quote = bot_token[:1] in {"'", '"'} or bot_token[-1:] in {"'", '"'}
+        has_colon = ":" in bot_token
+        logger.warning(
+            "Telegram token: present=%s, len=%d, space=%s, newline=%s, quote=%s, "
+            "colon=%s, preview=%s",
+            bool(bot_token), len(bot_token), has_space, has_newline, has_quote,
+            has_colon, self._safe_token_preview(bot_token),
+        )
+        if has_space or has_newline or has_quote:
+            logger.warning(
+                "Telegram Token 疑似包含多余空白/换行/引号，请检查 Secret 原始值"
+                "（GitHub Secret 会原样保留粘贴内容）"
+            )
+        if not has_colon:
+            logger.warning(
+                "Telegram Token 不含冒号，不符合标准格式 <bot_id>:<hash>，"
+                "请确认复制的是 BotFather 完整 Token"
+            )
+
+    def _verify_token_via_get_me(self, bot_token: str) -> bool:
+        """发送消息前用同一 Token 调用 getMe 验证身份。
+
+        - getMe 成功 → 缓存结果，后续发送不再重复验证
+        - getMe 返回 401 → Token 无效或未正确加载，明确报错并阻止本次发送
+        - 网络异常 / 服务端 5xx → 记录警告但不阻止 sendMessage（避免误伤网络抖动）
+        """
+        if self._token_verified:
+            return True
+
+        api_url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        try:
+            response = requests.get(api_url, timeout=10)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            logger.warning(f"Telegram getMe 验证请求异常（不阻塞发送）: {e}")
+            return True
+
+        if response.status_code == 200 and response.json().get('ok'):
+            username = response.json().get('result', {}).get('username', 'unknown')
+            logger.info(f"Telegram Token 验证成功 (getMe OK, bot=@{username})")
+            self._token_verified = True
+            return True
+
+        if response.status_code == 401:
+            # 撤销后的 Token 调用 Bot API 返回 401 Unauthorized
+            logger.error("Telegram Token 无效或未正确加载（getMe 返回 401 Unauthorized）")
+            logger.error(
+                "请确认：1) BotFather 生成的最新 Token 已更新到 GitHub Secret "
+                "TELEGRAM_BOT_TOKEN；2) 旧 Token 已在 BotFather /revoke 后不再被任何"
+                " Secret/环境变量引用；3) Secret 值前后无多余空格、换行或引号"
+            )
+            self._log_token_diagnostics(bot_token)
+            return False
+
+        logger.warning(
+            f"Telegram getMe 验证返回非预期状态 HTTP {response.status_code}"
+            f"（不阻塞发送）: {response.text[:200]}"
+        )
+        return True
 
     def _is_telegram_configured(self) -> bool:
         """检查 Telegram 配置是否完整"""
@@ -76,6 +157,11 @@ class TelegramSender:
         bot_token = self._telegram_config['bot_token']
         chat_id = target_chat_id
         message_thread_id = target_message_thread_id
+
+        # 发送前先用同一 Token 调用 getMe 验证身份；401 时直接明确报错，
+        # 避免用无效 Token 反复重试 sendMessage 得到含糊的失败日志。
+        if not self._verify_token_via_get_me(bot_token):
+            return False
 
         try:
             # Telegram API 端点
@@ -347,6 +433,8 @@ class TelegramSender:
         bot_token = self._telegram_config['bot_token']
         chat_id = self._telegram_config['chat_id']
         message_thread_id = self._telegram_config.get('message_thread_id')
+        if not self._verify_token_via_get_me(bot_token):
+            return False
         api_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
         try:
             data = {"chat_id": chat_id}

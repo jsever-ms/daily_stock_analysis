@@ -73,6 +73,21 @@ jobs:
           echo "📈 持仓比例: ${{ github.event.inputs.position_ratio }}%"
           echo "📄 推送详细度: ${{ github.event.inputs.detail_level || 'simple' }}"
           echo "=========================================="
+          # Telegram Token 脱敏诊断：确认 Secret 注入情况（不打印完整值）
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            TG_LEN=${#TELEGRAM_BOT_TOKEN}
+            TG_SPACE=False; case "$TELEGRAM_BOT_TOKEN" in *" "*) TG_SPACE=True;; esac
+            TG_NEWLINE=False; case "$TELEGRAM_BOT_TOKEN" in *$'\n'*|*$'\r'*) TG_NEWLINE=True;; esac
+            TG_COLON=False; case "$TELEGRAM_BOT_TOKEN" in *:*) TG_COLON=True;; esac
+            if [ "$TG_LEN" -gt 8 ]; then
+              TG_PREVIEW="$(printf %s "$TELEGRAM_BOT_TOKEN" | head -c 4)****$(printf %s "$TELEGRAM_BOT_TOKEN" | tail -c 4)"
+            else
+              TG_PREVIEW="(过短)"
+            fi
+            echo "Telegram token: present=True, len=$TG_LEN, space=$TG_SPACE, newline=$TG_NEWLINE, colon=$TG_COLON, preview=$TG_PREVIEW"
+          else
+            echo "Telegram token: present=False"
+          fi
           python main.py \
             --stocks "${{ github.event.inputs.stock_code }}" \
             --cost-price "${{ github.event.inputs.cost_price }}" \

@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 增加最终安全兜底：LLM 统一入口（`llm_adapter.call_completion`）在调用 API 前再次校验最新用户消息，若以 `/` 开头则直接拦截并记录日志（`Blocked command passthrough`），即使上层路由将来被改坏也不会再次发生命令穿透。
 - [改进] Telegram 消息链路增加 `[TG-DIAG]` 诊断日志：真实消息入口（raw_text）、命令解析结果、dispatcher 实例与 matched handler、NL 路由决策、ChatCommand 实际调用 LLM 的问题文本全链路可观测，用于实机定位命令穿透根因；getUpdates 出现 409/webhook 冲突时日志会明确提示“疑似同一 Token 存在第二个消费者”。
 - [改进] `/status` 新增“运行信息”区块：自报当前进程加载的代码版本（git revision）、dispatcher 真实注册的命令列表与数量、Telegram 轮询运行状态；启动日志同步自报代码版本与代码路径，用于核对部署进程是否存在版本漂移（旧进程未重启 / 镜像未重建）。
+- [改进] Telegram 发送前增加 getMe 身份预验证：用同一 Token 调用 getMe，401 时明确输出「Telegram Token 无效或未正确加载」并阻止本次 sendMessage（含发送指引），成功后缓存结果不重复验证；网络异常不阻塞发送。用于快速定位 Token 撤销/Secret 未更新类 401 问题。
+- [改进] 增加 Token 安全诊断日志（Python sender 与 GitHub Actions workflow 双侧）：只输出 present/len/space/newline/quote/colon 与前 4 后 4 位打码预览（如 `preview=1234****AbCd`），禁止完整 Token 进日志；检测 Secret 粘贴事故（多余空格、CRLF 换行、引号包裹、缺冒号）。
 
 ## [3.31.0] - 2026-08-23
 

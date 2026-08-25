@@ -1852,6 +1852,13 @@ class TestSlackSender(unittest.TestCase):
 class TestTelegramSender(unittest.TestCase):
     """Unit tests for TelegramSender."""
 
+    def setUp(self):
+        # 统一 mock getMe 验证调用，避免单测发起真实网络请求
+        get_patcher = mock.patch("src.notification_sender.telegram_sender.requests.get")
+        mock_get = get_patcher.start()
+        mock_get.return_value = _response(200, {"ok": True, "result": {"username": "testbot"}})
+        self.addCleanup(get_patcher.stop)
+
     def test_send_returns_false_when_not_configured(self):
         cfg = _config()
         sender = TelegramSender(cfg)
@@ -2016,6 +2023,89 @@ class TestTelegramSender(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(mock_post.call_count, 2)
+
+    def test_get_me_401_blocks_send_with_clear_error(self):
+        """getMe 返回 401 时必须阻止发送并输出明确的 Token 无效日志。"""
+        with mock.patch("src.notification_sender.telegram_sender.requests.get") as mock_get, \
+             mock.patch("src.notification_sender.telegram_sender.requests.post") as mock_post:
+            mock_get.return_value = _response(401, {"ok": False, "error_code": 401})
+            cfg = _config(telegram_bot_token="123456:ABC-REVOKED-TOKEN", telegram_chat_id="CHAT")
+            sender = TelegramSender(cfg)
+
+            with self.assertLogs("src.notification_sender.telegram_sender", level="WARNING") as logs:
+                result = sender.send_to_telegram("hello")
+
+        self.assertFalse(result)
+        # sendMessage 不应被调用
+        mock_post.assert_not_called()
+        log_text = "\n".join(logs.output)
+        self.assertIn("Telegram Token 无效或未正确加载", log_text)
+        self.assertIn("TELEGRAM_BOT_TOKEN", log_text)
+        # 诊断日志包含 Token 安全概要（禁止完整 Token）
+        self.assertIn("present=True", log_text)
+        self.assertIn("colon=True", log_text)
+        self.assertIn("preview=", log_text)
+        self.assertNotIn("ABC-REVOKED-TOKEN", log_text)
+
+    def test_get_me_success_verifies_once_then_sends(self):
+        """getMe 成功后缓存验证结果，后续发送不再重复调用 getMe。"""
+        with mock.patch("src.notification_sender.telegram_sender.requests.get") as mock_get, \
+             mock.patch("src.notification_sender.telegram_sender.requests.post") as mock_post:
+            mock_get.return_value = _response(200, {"ok": True, "result": {"username": "mybot"}})
+            mock_post.return_value = _response(200, {"ok": True})
+            cfg = _config(telegram_bot_token="123456:ABC", telegram_chat_id="CHAT")
+            sender = TelegramSender(cfg)
+
+            self.assertTrue(sender.send_to_telegram("first"))
+            self.assertTrue(sender.send_to_telegram("second"))
+
+        mock_get.assert_called_once()
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn("/getMe", mock_get.call_args[0][0])
+
+    def test_get_me_network_error_does_not_block_send(self):
+        """getMe 网络异常不阻塞 sendMessage（避免误伤网络抖动场景）。"""
+        import requests as _requests
+        with mock.patch("src.notification_sender.telegram_sender.requests.get") as mock_get, \
+             mock.patch("src.notification_sender.telegram_sender.requests.post") as mock_post:
+            mock_get.side_effect = _requests.exceptions.ConnectionError("dns fail")
+            mock_post.return_value = _response(200, {"ok": True})
+            cfg = _config(telegram_bot_token="123456:ABC", telegram_chat_id="CHAT")
+            sender = TelegramSender(cfg)
+
+            self.assertTrue(sender.send_to_telegram("hello"))
+
+        mock_post.assert_called_once()
+
+    def test_token_diagnostics_report_format(self):
+        """诊断日志格式：present/len/space/newline/colon/preview 且不泄露完整 Token。"""
+        token = "123456789:AAAbbbCCCdddEEEfff"  # 28 chars
+        cfg = _config(telegram_bot_token=token, telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+
+        with self.assertLogs("src.notification_sender.telegram_sender", level="WARNING") as logs:
+            sender._log_token_diagnostics(token)
+
+        log_text = "\n".join(logs.output)
+        self.assertIn("present=True", log_text)
+        self.assertIn("len=28", log_text)
+        self.assertIn("space=False", log_text)
+        self.assertIn("newline=False", log_text)
+        self.assertIn("colon=True", log_text)
+        expected_preview = "1234" + "*" * (len(token) - 8) + "Efff"
+        self.assertIn(f"preview={expected_preview}", log_text)
+        # 完整 Token 不允许出现在日志
+        self.assertNotIn("AAAbbbCCCdddEEEfff", log_text)
+
+    def test_safe_token_preview_masks_middle(self):
+        """Token 预览只保留前 4 后 4 位，中间全部打码。"""
+        token = "1234567890:AbCdEf"  # 17 chars
+        self.assertEqual(
+            TelegramSender._safe_token_preview(token),
+            "1234" + "*" * (len(token) - 8) + "CdEf",
+        )
+        self.assertEqual(TelegramSender._safe_token_preview(""), "")
+        self.assertEqual(TelegramSender._safe_token_preview("short"), "*****")
 
 
 if __name__ == "__main__":
