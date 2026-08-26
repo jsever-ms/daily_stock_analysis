@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增 `/start` 命令，作为 Telegram「开始」按钮入口，返回欢迎语与机器人能力指引。
 - [改进] `/help` 改为从实际命令注册表（`ALL_COMMANDS`）动态生成命令列表，删除或新增命令后自动同步，不再依赖 LLM 生成命令说明。
 - [改进] Telegram 底部菜单改为程序自动注册：启动 Long Polling 时通过 `setMyCommands` 自动同步常用命令（`/analyze`、`/ask`、`/batch`、`/market`、`/research`、`/chat`、`/status`、`/help`），命令集合与 Command Registry 同源，注册表删除/隐藏命令后自动跳过，同步失败仅记录 warning 不影响轮询。
-- [改进] 重构 `/ask` 默认输出为手机友好结构化摘要（核心结论 → 关键依据 → 主要风险 → 操作点位 → 触发/失效条件），隐藏内部字段名（`bull_trend`、`sentiment_score`、`skill` 等不直接暴露）；新增 `/ask <代码> detail` 详细模式保留完整原始分析。
+- [改进] 重构 `/ask` 默认输出：改为固定结构（🎯核心结论 → 📈关键依据 → ⚠️主要风险 → 🎯操作点位 → 🔄触发条件），最高 1-2 手机屏；新增 `_ID_MAP` 内部字段名映射表，`bull_trend`、`sentiment_score` 等 snake_case 不再暴露；无 dashboard 时不再截断原始内容，改为引导使用 `/ask <代码> detail`；新增 `/ask <代码> detail` 详细模式保留完整四阶段分析；新增 `_safe()` 文本清洗函数防止内部 ID 泄漏。
 - [改进] `/status` 默认精简为「主模型 / Agent 模型 / 行情 / 新闻搜索 / 自选股 / 代码版本」各行展示，完整诊断移至 `/status detail`。
 - [修复] 修复 Railway 下「代码版本: unknown」问题：新增 `RAILWAY_GIT_COMMIT_SHA` 环境变量识别，Railway 自动注入的部署 commit 短 hash 可正常显示。
 - [修复] 确认为 `/strategies` 已不存在 `DEFAULT_AGENT_SKILLS` 过期 import，当前代码正确读取 `SkillManager` 真实注册表。

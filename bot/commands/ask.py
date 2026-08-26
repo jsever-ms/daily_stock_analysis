@@ -263,7 +263,7 @@ class AskCommand(BotCommand):
 
         Args:
             detail_mode: 若为 True，输出完整原始分析（调试友好）；
-                否则输出手机友好的结构化摘要。
+                否则输出手机友好的结构化摘要，绝不通过截断详细报告生成。
         """
         try:
             from src.agent.factory import build_agent_executor
@@ -284,16 +284,18 @@ class AskCommand(BotCommand):
                     header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
                     return BotResponse.text_response(header + result.content)
 
-                # 手机友好结构化摘要
+                # 手机友好结构化摘要：仅从 dashboard 字段重组，绝不截断详细报告
                 dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
                 if dashboard:
                     summary = self._format_mobile_summary(code, skill_name, dashboard)
                     return BotResponse.markdown_response(summary)
-                # 无 dashboard 时的 fallback：截取前 600 字符
-                content = (result.content or "").strip()
-                if len(content) > 600:
-                    content = content[:600] + "\n\n...(完整分析请使用 /ask <代码> detail)"
-                return BotResponse.text_response(f"📊 {code} | 技能: {skill_name}\n{content}")
+
+                # 无可用 dashboard 时，引导用户使用 detail 模式，绝不能截断原始内容
+                return BotResponse.text_response(
+                    f"📊 {code} | 技能: {skill_name}\n\n"
+                    f"⚠️ 无法生成简版报告，该分析结果不包含结构化数据。\n\n"
+                    f"查看完整分析：/{self.name} {code} detail"
+                )
 
             return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
 
@@ -306,166 +308,302 @@ class AskCommand(BotCommand):
     def _format_mobile_summary(code: str, skill_name: str, dashboard: dict) -> str:
         """从 dashboard 生成手机友好的结构化摘要。
 
-        固定结构：核心结论 → 关键依据 → 主要风险 → 操作点位 → 触发/失效条件。
-        内部字段名（bull_trend、sentiment_score、skill 等）不直接暴露。
+        固定结构（绝不通过截断详细报告生成）：
+            📊 股票名称（代码）
+            🎯 核心结论（买入/观望/减仓/卖出 + 综合评分 + 一句话）
+            📈 关键依据（趋势/量价/估值/市场环境，最多 4 条）
+            ⚠️ 主要风险（最多 3 条）
+            🎯 操作点位（理想买入区/支撑位/止损位/压力位）
+            🔄 触发条件（什么条件下转为买入，什么条件下失效）
+            查看完整分析：/ask <代码> detail
+
+        所有内部字段名（bull_trend、sentiment_score、ma_golden_cross 等）
+        绝不直接暴露，必须映射为自然中文。
         """
-        stock_name = str(dashboard.get("stock_name") or code).strip()
-        decision = str(dashboard.get("decision_type") or "").strip()
+
+        # ── 内部字段名 → 人类可读中文映射表 ──
+        # 用于 dashboard 字段值中可能出现的 snake_case / internal ID 清理
+        _ID_MAP = {
+            "bull_trend": "多头趋势",
+            "sentiment_score": "情绪评分",
+            "ma_golden_cross": "均线金叉",
+            "volume_breakout": "放量突破",
+            "support_level": "支撑位",
+            "resistance_level": "压力位",
+            "stop_loss": "止损位",
+            "take_profit": "目标位",
+            "ideal_buy": "理想买入区",
+            "secondary_buy": "次优买入区",
+            "trend_prediction": "趋势预测",
+            "operation_advice": "操作建议",
+            "risk_warning": "风险提示",
+            "analysis_summary": "分析摘要",
+            "price_position": "价格位置",
+            "volume_analysis": "量价分析",
+            "chip_structure": "筹码结构",
+            "turnover_rate": "换手率",
+            "profit_ratio": "盈利比例",
+            "avg_cost": "平均成本",
+            "concentration": "筹码集中度",
+            "phase_decision": "阶段决策",
+            "watch_conditions": "观察条件",
+            "immediate_action": "当前动作",
+            "position_advice": "仓位建议",
+            "sniper_points": "狙击点位",
+            "signal_attribution": "信号归因",
+            "intelligence": "情报分析",
+            "core_conclusion": "核心结论",
+            "battle_plan": "作战计划",
+            "data_perspective": "数据视角",
+            "trend_status": "趋势状态",
+            "ma_alignment": "均线排列",
+            "is_bullish": "看涨",
+            "action_checklist": "执行清单",
+            "suggested_position": "建议仓位",
+            "risk_control": "风险控制",
+            "entry_plan": "入场计划",
+            "confidence_level": "置信度",
+            "decision_type": "决策类型",
+            "stock_name": "股票名称",
+            "one_sentence": "一句话总结",
+            "time_sensitivity": "时效性",
+            "latest_news": "最新消息",
+            "risk_alerts": "风险预警",
+            "positive_catalysts": "正面催化剂",
+            "earnings_outlook": "业绩展望",
+            "sentiment_summary": "情绪摘要",
+            "technical_indicators": "技术指标",
+            "news_sentiment": "新闻情绪",
+            "fundamentals": "基本面",
+            "market_conditions": "市场环境",
+            "strongest_bullish_signal": "最强看多信号",
+            "strongest_bearish_signal": "最强看空信号",
+        }
+
+        def _safe(val: str) -> str:
+            """去除空值标记，并清理内部 ID 字符串。"""
+            if not val or str(val).strip() in ("", "-", "—", "N/A", "None", "无", "none"):
+                return ""
+            text = str(val).strip()
+            # 将文本中出现的内部 ID 替换为中文
+            for eng, cn in _ID_MAP.items():
+                # 只替换完整单词（前后非字母数字）
+                text = re.sub(r'\b' + re.escape(eng) + r'\b', cn, text)
+            return text
+
+        def _get_str(d: dict, *keys: str, default: str = "") -> str:
+            """安全地从嵌套 dict 中提取字符串值。"""
+            for key in keys:
+                if not isinstance(d, dict):
+                    return default
+                d = d.get(key, {})
+            return _safe(str(d)) if isinstance(d, str) else default
+
+        stock_name = _safe(str(dashboard.get("stock_name") or code))
+
+        # ── 决策映射 ──
+        raw_decision = str(dashboard.get("decision_type", "")).strip().lower()
+        decision_map = {"buy": "买入", "hold": "观望", "sell": "卖出", "reduce": "减仓"}
+        decision_text = decision_map.get(raw_decision, raw_decision)
+
+        # ── 综合评分（0-10）──
         sentiment = dashboard.get("sentiment_score")
-        confidence = str(dashboard.get("confidence_level") or "").strip()
-
-        # 置信度中文
-        confidence_text = ""
+        comprehensive_score = ""
         if isinstance(sentiment, (int, float)) and 0 <= sentiment <= 100:
-            pct = sentiment / 100.0
-            if pct >= 0.85:
-                confidence_text = "高置信度"
-            elif pct >= 0.65:
-                confidence_text = "中等置信度"
-            else:
-                confidence_text = "低置信度"
-        elif confidence:
-            confidence_text = {"高": "高置信度", "中": "中等置信度", "低": "低置信度"}.get(confidence, confidence)
+            score_val = round(sentiment / 10.0, 1)
+            comprehensive_score = f"综合评分：{score_val}/10"
+        elif isinstance(sentiment, (int, float)):
+            score_val = max(0, min(10, round(sentiment / 10.0)))
+            comprehensive_score = f"综合评分：{score_val}/10"
 
-        # 决策类型 → 中文信号
-        signal_map = {"buy": "🟢 看多/买入", "hold": "🟡 持有/观望", "sell": "🔴 看空/卖出"}
-        signal_text = signal_map.get(decision.lower(), decision)
-
-        lines = [
-            f"📊 {stock_name}（{code}）",
-            f"技能：{skill_name}",
-            "",
-        ]
-
-        # ── 核心结论 ──
+        # ── 一句话原因 ──
         nested = dashboard.get("dashboard") or {}
         core = nested.get("core_conclusion") or {}
-        one_sentence = str(core.get("one_sentence") or "").strip()
+        one_sentence = _safe(str(core.get("one_sentence") or ""))
 
-        conclusion_parts = [f"**{signal_text}**"]
-        if confidence_text:
-            conclusion_parts.append(confidence_text)
-        if one_sentence:
-            conclusion_parts.append(f"—— {one_sentence}")
-
-        lines.append("📌 **核心结论**")
-        lines.append("　".join(conclusion_parts))
-        lines.append("")
-
-        # ── 关键依据 ──
+        # ── 信号归因（关键依据）──
         attribution = nested.get("signal_attribution") or {}
         evidence_items = []
-        for label, key, unit in [
-            ("技术指标", "technical_indicators", "贡献"),
-            ("新闻舆情", "news_sentiment", "贡献"),
-            ("基本面", "fundamentals", "贡献"),
-            ("市场环境", "market_conditions", "贡献"),
-        ]:
-            val = attribution.get(key)
-            if isinstance(val, (int, float)) and val > 0:
-                evidence_items.append(f"• {label}：{val:.0f}% {unit}")
 
-        # 从 data_perspective 提取简要趋势状态
-        data_perspective = nested.get("data_perspective") or {}
-        trend_status = data_perspective.get("trend_status") or {}
-        if trend_status.get("is_bullish") is not None:
-            trend_label = "看涨" if trend_status.get("is_bullish") else "看跌"
-            ma_text = str(trend_status.get("ma_alignment") or "").strip()
-            if ma_text:
-                evidence_items.append(f"• 均线排列：{ma_text}（{trend_label}）")
+        # 趋势
+        dp = nested.get("data_perspective") or {}
+        ts = dp.get("trend_status") or {}
+        trend_text = _safe(str(ts.get("ma_alignment") or ""))
+        if ts.get("is_bullish") is not None:
+            trend_label = "看涨" if ts.get("is_bullish") else "看跌"
+            if trend_text:
+                evidence_items.append(f"趋势：{trend_text}（{trend_label}）")
             else:
-                evidence_items.append(f"• 趋势判断：{trend_label}")
+                evidence_items.append(f"趋势：{trend_label}")
 
-        # 最强信号
-        strongest_bull = str(attribution.get("strongest_bullish_signal") or "").strip()
-        strongest_bear = str(attribution.get("strongest_bearish_signal") or "").strip()
-        if strongest_bull and strongest_bull not in ("", "none", "无"):
-            evidence_items.append(f"• 最强看多：{strongest_bull}")
-        if strongest_bear and strongest_bear not in ("", "none", "无"):
-            evidence_items.append(f"• 最强看空：{strongest_bear}")
+        # 量价
+        volume = dp.get("volume_analysis") or {}
+        vol_status = _safe(str(volume.get("volume_status") or ""))
+        vol_ratio = volume.get("volume_ratio")
+        if vol_status:
+            evidence_items.append(f"量价：{vol_status}")
+        elif isinstance(vol_ratio, (int, float)):
+            evidence_items.append(f"量价：量比 {vol_ratio:.2f}")
 
-        if evidence_items:
-            lines.append("📊 **关键依据**")
-            lines.extend(evidence_items)
-            lines.append("")
+        # 估值/基本面
+        fundamentals_val = attribution.get("fundamentals")
+        if isinstance(fundamentals_val, (int, float)) and fundamentals_val > 0:
+            evidence_items.append(f"估值/基本面：贡献 {fundamentals_val:.0f}%")
+
+        # 市场环境
+        market_val = attribution.get("market_conditions")
+        if isinstance(market_val, (int, float)) and market_val > 0:
+            evidence_items.append(f"市场环境：贡献 {market_val:.0f}%")
+
+        # 若信号归因不足 4 条，补充技术指标和新闻情绪
+        tech_val = attribution.get("technical_indicators")
+        if isinstance(tech_val, (int, float)) and tech_val > 0 and len(evidence_items) < 4:
+            evidence_items.append(f"技术指标：贡献 {tech_val:.0f}%")
+        news_val = attribution.get("news_sentiment")
+        if isinstance(news_val, (int, float)) and news_val > 0 and len(evidence_items) < 4:
+            evidence_items.append(f"新闻情绪：贡献 {news_val:.0f}%")
+
+        # 最强信号补位
+        if len(evidence_items) < 2:
+            strong_bull = _safe(str(attribution.get("strongest_bullish_signal") or ""))
+            strong_bear = _safe(str(attribution.get("strongest_bearish_signal") or ""))
+            if strong_bull and strong_bull not in ("", "none", "无"):
+                evidence_items.append(f"最强看多：{strong_bull}")
+            if strong_bear and strong_bear not in ("", "none", "无") and len(evidence_items) < 4:
+                evidence_items.append(f"最强看空：{strong_bear}")
+
+        # 最多保留 4 条
+        evidence_items = evidence_items[:4]
 
         # ── 主要风险 ──
         intelligence = nested.get("intelligence") or {}
         risk_alerts = intelligence.get("risk_alerts") or []
-        risk_warning = str(dashboard.get("risk_warning") or "").strip()
+        raw_risk_warning = _safe(str(dashboard.get("risk_warning") or ""))
 
         risk_items = []
-        for alert in risk_alerts[:3]:
-            if isinstance(alert, str) and alert.strip():
-                risk_items.append(f"• {alert.strip()}")
+        for alert in risk_alerts:
+            if len(risk_items) >= 3:
+                break
+            if isinstance(alert, str):
+                txt = _safe(alert)
+                if txt:
+                    risk_items.append(txt)
             elif isinstance(alert, dict):
                 desc = alert.get("description") or alert.get("alert") or ""
-                if desc:
-                    risk_items.append(f"• {str(desc).strip()}")
-        if risk_warning and risk_warning not in ("", "无", "none"):
-            risk_items.append(f"• {risk_warning}")
-
-        if risk_items:
-            lines.append("⚠️ **主要风险**")
-            lines.extend(risk_items[:3])
-            lines.append("")
+                txt = _safe(str(desc))
+                if txt:
+                    risk_items.append(txt)
+        if raw_risk_warning and len(risk_items) < 3:
+            risk_items.append(raw_risk_warning)
 
         # ── 操作点位 ──
         battle_plan = nested.get("battle_plan") or {}
         sniper = battle_plan.get("sniper_points") or {}
-        position_strategy = battle_plan.get("position_strategy") or {}
 
-        # 核心结论中的 position_advice
-        position_advice = core.get("position_advice") or {}
+        def _sniper_val(key: str) -> str:
+            v = AskCommand._format_sniper_value(sniper.get(key))
+            return _safe(v) if v else ""
 
-        point_lines = []
-        for key, label in [("ideal_buy", "理想买入"), ("secondary_buy", "次优买入"),
-                            ("stop_loss", "止损位"), ("take_profit", "目标位")]:
-            val = AskCommand._format_sniper_value(sniper.get(key))
-            if val:
-                point_lines.append(f"• {label}：{val}")
+        ideal_buy = _sniper_val("ideal_buy")
+        secondary_buy = _sniper_val("secondary_buy")
+        stop_loss = _sniper_val("stop_loss")
+        take_profit = _sniper_val("take_profit")
 
-        if point_lines:
-            lines.append("🎯 **操作点位**")
-            lines.extend(point_lines)
-            lines.append("")
+        # 支撑位：优先从 price_position 获取，其次用 secondary_buy
+        support = _safe(str(dp.get("price_position", {}).get("support_level") or ""))
+        if not support:
+            support = secondary_buy
 
-        # ── 触发/失效条件 ──
+        # 压力位/目标位：优先 take_profit，其次 price_position.resistance_level
+        resistance = _safe(str(dp.get("price_position", {}).get("resistance_level") or ""))
+        if not resistance:
+            resistance = take_profit
+
+        # 是否有可靠点位
+        has_reliable_points = any(v for v in [ideal_buy, support, stop_loss, resistance])
+
+        # ── 触发条件 ──
         phase = nested.get("phase_decision") or {}
         watch_conditions = phase.get("watch_conditions") or []
-        immediate_action = str(phase.get("immediate_action") or "").strip()
-        next_check = str(phase.get("next_check_time") or "").strip()
+        immediate_action = _safe(str(phase.get("immediate_action") or ""))
+        next_check = _safe(str(phase.get("next_check_time") or ""))
+        position_advice = core.get("position_advice") or {}
 
-        condition_lines = []
-        if immediate_action and immediate_action not in ("", "-", "无"):
-            condition_lines.append(f"• 当前动作：{immediate_action}")
+        trigger_lines = []
+        if immediate_action:
+            trigger_lines.append(f"• 当前动作：{immediate_action}")
         for wc in watch_conditions[:3]:
-            wc_str = str(wc).strip()
+            wc_str = _safe(str(wc))
             if wc_str:
-                condition_lines.append(f"• 观察条件：{wc_str}")
+                trigger_lines.append(f"• {wc_str}")
         if next_check:
-            condition_lines.append(f"• 下次检查：{next_check}")
-
-        # 空仓/持仓建议
-        np_text = str(position_advice.get("no_position") or "").strip()
-        hp_text = str(position_advice.get("has_position") or "").strip()
+            trigger_lines.append(f"• 下次检查：{next_check}")
+        # 空仓/持仓建议作为触发/失效条件的补充
+        np_text = _safe(str(position_advice.get("no_position") or ""))
+        hp_text = _safe(str(position_advice.get("has_position") or ""))
         if np_text and np_text not in ("", "-", "无"):
-            condition_lines.append(f"• 空仓者：{np_text}")
+            trigger_lines.append(f"• 空仓者：{np_text}")
         if hp_text and hp_text not in ("", "-", "无"):
-            condition_lines.append(f"• 持仓者：{hp_text}")
+            trigger_lines.append(f"• 持仓者：{hp_text}")
 
-        if condition_lines:
-            lines.append("⏰ **触发/失效条件**")
-            lines.extend(condition_lines)
+        # ── 组装输出 ──
+        lines = [
+            f"📊 **{stock_name}（{code}）**",
+            "",
+        ]
+
+        # 🎯 核心结论
+        lines.append("🎯 **核心结论**")
+        lines.append(decision_text)
+        if comprehensive_score:
+            lines.append(comprehensive_score)
+        if one_sentence:
+            lines.append(one_sentence)
+        lines.append("")
+
+        # 📈 关键依据
+        if evidence_items:
+            lines.append("📈 **关键依据**")
+            lines.extend(evidence_items)
             lines.append("")
 
-        # ── 操作建议（兜底：如果上面都没有，展示 operation_advice）──
-        if not point_lines and not condition_lines and not risk_items:
-            op_advice = str(dashboard.get("operation_advice") or "").strip()
-            if op_advice:
-                lines.append("💡 **操作建议**")
-                lines.append(f"• {op_advice}")
-                lines.append("")
+        # ⚠️ 主要风险
+        if risk_items:
+            lines.append("⚠️ **主要风险**")
+            for item in risk_items[:3]:
+                lines.append(f"• {item}")
+            lines.append("")
+
+        # 🎯 操作点位
+        lines.append("🎯 **操作点位**")
+        if has_reliable_points:
+            if ideal_buy:
+                lines.append(f"• 理想买入区：{ideal_buy}")
+            if support:
+                lines.append(f"• 支撑位：{support}")
+            if stop_loss:
+                lines.append(f"• 止损位：{stop_loss}")
+            if resistance:
+                lines.append(f"• 压力位/目标位：{resistance}")
+        else:
+            lines.append("暂无可靠点位")
+        lines.append("")
+
+        # 🔄 触发条件
+        lines.append("🔄 **触发条件**")
+        if trigger_lines:
+            lines.extend(trigger_lines)
+        else:
+            # 从 phase_decision 中提取 basic 触发和失效语义
+            trigger = _safe(str(phase.get("action_window") or ""))
+            if trigger:
+                lines.append(f"• {trigger}")
+            else:
+                lines.append("暂无明确触发条件，请结合市场走势判断")
+        lines.append("")
+
+        # 尾部引导
+        lines.append(f"查看完整分析：/ask {code} detail")
 
         return "\n".join(lines).strip()
 
