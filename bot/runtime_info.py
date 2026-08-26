@@ -20,8 +20,9 @@ def get_runtime_revision() -> str:
 
     解析顺序：
     1. 环境变量 ``DSA_GIT_COMMIT``（CI / Docker 构建时注入）
-    2. ``git rev-parse --short HEAD``（源码目录运行）
-    3. ``unknown``（无法确定，如精简容器内无 .git）
+    2. 环境变量 ``RAILWAY_GIT_COMMIT_SHA``（Railway 自动注入的部署 commit）
+    3. ``git rev-parse --short HEAD``（源码目录运行）
+    4. ``unknown``（无法确定，如精简容器内无 .git）
     """
     global _REVISION_CACHE
     if _REVISION_CACHE is not None:
@@ -30,6 +31,12 @@ def get_runtime_revision() -> str:
     env_revision = (os.getenv("DSA_GIT_COMMIT") or "").strip()
     if env_revision:
         _REVISION_CACHE = env_revision
+        return _REVISION_CACHE
+
+    # Railway 自动注入的部署 commit SHA（40 位完整 hash）
+    railway_revision = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()
+    if railway_revision:
+        _REVISION_CACHE = railway_revision[:7]
         return _REVISION_CACHE
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -226,13 +226,27 @@ class AskCommand(BotCommand):
 
         raw_code_str, remaining_args = self._merge_code_args(args)
         codes = self._parse_stock_codes(raw_code_str)
+
+        # 检测 detail 模式：在剩余参数中查找 detail/详细/d，并从 skill_text 中移除
+        detail_mode = False
+        filtered_args = []
+        for token in remaining_args:
+            if token.lower() in ("detail", "详细", "d"):
+                detail_mode = True
+            else:
+                filtered_args.append(token)
+        remaining_args = filtered_args
+
         skill_id = self._parse_skill(["placeholder"] + remaining_args) if remaining_args else self._get_default_skill_id()
         skill_text = " ".join(remaining_args).strip()
 
-        logger.info("[AskCommand] Stocks: %s, Skill: %s, Extra: %s", codes, skill_id, skill_text)
+        logger.info(
+            "[AskCommand] Stocks: %s, Skill: %s, Extra: %s, Detail: %s",
+            codes, skill_id, skill_text, detail_mode,
+        )
 
         if len(codes) == 1:
-            return self._analyze_single(config, message, codes[0], skill_id, skill_text)
+            return self._analyze_single(config, message, codes[0], skill_id, skill_text, detail_mode)
 
         return self._analyze_multi(config, message, codes, skill_id, skill_text)
 
@@ -243,8 +257,14 @@ class AskCommand(BotCommand):
         code: str,
         skill_id: str,
         skill_text: str,
+        detail_mode: bool = False,
     ) -> BotResponse:
-        """Analyze a single stock."""
+        """Analyze a single stock.
+
+        Args:
+            detail_mode: 若为 True，输出完整原始分析（调试友好）；
+                否则输出手机友好的结构化摘要。
+        """
         try:
             from src.agent.factory import build_agent_executor
 
@@ -259,14 +279,195 @@ class AskCommand(BotCommand):
 
             if result.success:
                 skill_name = self._resolve_skill_name(skill_id)
-                header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
-                return BotResponse.text_response(header + result.content)
+                if detail_mode:
+                    # 完整原始输出
+                    header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
+                    return BotResponse.text_response(header + result.content)
+
+                # 手机友好结构化摘要
+                dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
+                if dashboard:
+                    summary = self._format_mobile_summary(code, skill_name, dashboard)
+                    return BotResponse.markdown_response(summary)
+                # 无 dashboard 时的 fallback：截取前 600 字符
+                content = (result.content or "").strip()
+                if len(content) > 600:
+                    content = content[:600] + "\n\n...(完整分析请使用 /ask <代码> detail)"
+                return BotResponse.text_response(f"📊 {code} | 技能: {skill_name}\n{content}")
+
             return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
 
         except Exception as exc:
             logger.error("Ask command failed: %s", exc)
             logger.exception("Ask error details:")
             return BotResponse.text_response(f"⚠️ 问股执行出错: {str(exc)}")
+
+    @staticmethod
+    def _format_mobile_summary(code: str, skill_name: str, dashboard: dict) -> str:
+        """从 dashboard 生成手机友好的结构化摘要。
+
+        固定结构：核心结论 → 关键依据 → 主要风险 → 操作点位 → 触发/失效条件。
+        内部字段名（bull_trend、sentiment_score、skill 等）不直接暴露。
+        """
+        stock_name = str(dashboard.get("stock_name") or code).strip()
+        decision = str(dashboard.get("decision_type") or "").strip()
+        sentiment = dashboard.get("sentiment_score")
+        confidence = str(dashboard.get("confidence_level") or "").strip()
+
+        # 置信度中文
+        confidence_text = ""
+        if isinstance(sentiment, (int, float)) and 0 <= sentiment <= 100:
+            pct = sentiment / 100.0
+            if pct >= 0.85:
+                confidence_text = "高置信度"
+            elif pct >= 0.65:
+                confidence_text = "中等置信度"
+            else:
+                confidence_text = "低置信度"
+        elif confidence:
+            confidence_text = {"高": "高置信度", "中": "中等置信度", "低": "低置信度"}.get(confidence, confidence)
+
+        # 决策类型 → 中文信号
+        signal_map = {"buy": "🟢 看多/买入", "hold": "🟡 持有/观望", "sell": "🔴 看空/卖出"}
+        signal_text = signal_map.get(decision.lower(), decision)
+
+        lines = [
+            f"📊 {stock_name}（{code}）",
+            f"技能：{skill_name}",
+            "",
+        ]
+
+        # ── 核心结论 ──
+        nested = dashboard.get("dashboard") or {}
+        core = nested.get("core_conclusion") or {}
+        one_sentence = str(core.get("one_sentence") or "").strip()
+
+        conclusion_parts = [f"**{signal_text}**"]
+        if confidence_text:
+            conclusion_parts.append(confidence_text)
+        if one_sentence:
+            conclusion_parts.append(f"—— {one_sentence}")
+
+        lines.append("📌 **核心结论**")
+        lines.append("　".join(conclusion_parts))
+        lines.append("")
+
+        # ── 关键依据 ──
+        attribution = nested.get("signal_attribution") or {}
+        evidence_items = []
+        for label, key, unit in [
+            ("技术指标", "technical_indicators", "贡献"),
+            ("新闻舆情", "news_sentiment", "贡献"),
+            ("基本面", "fundamentals", "贡献"),
+            ("市场环境", "market_conditions", "贡献"),
+        ]:
+            val = attribution.get(key)
+            if isinstance(val, (int, float)) and val > 0:
+                evidence_items.append(f"• {label}：{val:.0f}% {unit}")
+
+        # 从 data_perspective 提取简要趋势状态
+        data_perspective = nested.get("data_perspective") or {}
+        trend_status = data_perspective.get("trend_status") or {}
+        if trend_status.get("is_bullish") is not None:
+            trend_label = "看涨" if trend_status.get("is_bullish") else "看跌"
+            ma_text = str(trend_status.get("ma_alignment") or "").strip()
+            if ma_text:
+                evidence_items.append(f"• 均线排列：{ma_text}（{trend_label}）")
+            else:
+                evidence_items.append(f"• 趋势判断：{trend_label}")
+
+        # 最强信号
+        strongest_bull = str(attribution.get("strongest_bullish_signal") or "").strip()
+        strongest_bear = str(attribution.get("strongest_bearish_signal") or "").strip()
+        if strongest_bull and strongest_bull not in ("", "none", "无"):
+            evidence_items.append(f"• 最强看多：{strongest_bull}")
+        if strongest_bear and strongest_bear not in ("", "none", "无"):
+            evidence_items.append(f"• 最强看空：{strongest_bear}")
+
+        if evidence_items:
+            lines.append("📊 **关键依据**")
+            lines.extend(evidence_items)
+            lines.append("")
+
+        # ── 主要风险 ──
+        intelligence = nested.get("intelligence") or {}
+        risk_alerts = intelligence.get("risk_alerts") or []
+        risk_warning = str(dashboard.get("risk_warning") or "").strip()
+
+        risk_items = []
+        for alert in risk_alerts[:3]:
+            if isinstance(alert, str) and alert.strip():
+                risk_items.append(f"• {alert.strip()}")
+            elif isinstance(alert, dict):
+                desc = alert.get("description") or alert.get("alert") or ""
+                if desc:
+                    risk_items.append(f"• {str(desc).strip()}")
+        if risk_warning and risk_warning not in ("", "无", "none"):
+            risk_items.append(f"• {risk_warning}")
+
+        if risk_items:
+            lines.append("⚠️ **主要风险**")
+            lines.extend(risk_items[:3])
+            lines.append("")
+
+        # ── 操作点位 ──
+        battle_plan = nested.get("battle_plan") or {}
+        sniper = battle_plan.get("sniper_points") or {}
+        position_strategy = battle_plan.get("position_strategy") or {}
+
+        # 核心结论中的 position_advice
+        position_advice = core.get("position_advice") or {}
+
+        point_lines = []
+        for key, label in [("ideal_buy", "理想买入"), ("secondary_buy", "次优买入"),
+                            ("stop_loss", "止损位"), ("take_profit", "目标位")]:
+            val = AskCommand._format_sniper_value(sniper.get(key))
+            if val:
+                point_lines.append(f"• {label}：{val}")
+
+        if point_lines:
+            lines.append("🎯 **操作点位**")
+            lines.extend(point_lines)
+            lines.append("")
+
+        # ── 触发/失效条件 ──
+        phase = nested.get("phase_decision") or {}
+        watch_conditions = phase.get("watch_conditions") or []
+        immediate_action = str(phase.get("immediate_action") or "").strip()
+        next_check = str(phase.get("next_check_time") or "").strip()
+
+        condition_lines = []
+        if immediate_action and immediate_action not in ("", "-", "无"):
+            condition_lines.append(f"• 当前动作：{immediate_action}")
+        for wc in watch_conditions[:3]:
+            wc_str = str(wc).strip()
+            if wc_str:
+                condition_lines.append(f"• 观察条件：{wc_str}")
+        if next_check:
+            condition_lines.append(f"• 下次检查：{next_check}")
+
+        # 空仓/持仓建议
+        np_text = str(position_advice.get("no_position") or "").strip()
+        hp_text = str(position_advice.get("has_position") or "").strip()
+        if np_text and np_text not in ("", "-", "无"):
+            condition_lines.append(f"• 空仓者：{np_text}")
+        if hp_text and hp_text not in ("", "-", "无"):
+            condition_lines.append(f"• 持仓者：{hp_text}")
+
+        if condition_lines:
+            lines.append("⏰ **触发/失效条件**")
+            lines.extend(condition_lines)
+            lines.append("")
+
+        # ── 操作建议（兜底：如果上面都没有，展示 operation_advice）──
+        if not point_lines and not condition_lines and not risk_items:
+            op_advice = str(dashboard.get("operation_advice") or "").strip()
+            if op_advice:
+                lines.append("💡 **操作建议**")
+                lines.append(f"• {op_advice}")
+                lines.append("")
+
+        return "\n".join(lines).strip()
 
     def _analyze_multi(
         self,

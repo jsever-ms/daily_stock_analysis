@@ -198,17 +198,10 @@ class StatusCommand(BotCommand):
         def ok(enabled: bool) -> str:
             return "✅" if enabled else "❌"
 
-        # AI 模型摘要：优先 LLM 渠道名，其次 legacy provider key，最后主模型 provider
-        if status.get("ai_channels"):
-            ai_models = " / ".join(status["ai_channels"])
-        else:
-            present_keys = [name for name, on in status["ai_legacy_keys"].items() if on]
-            if present_keys:
-                ai_models = " / ".join(present_keys)
-            elif status.get("ai_primary_model"):
-                ai_models = status["ai_primary_model"].split("/", 1)[0]
-            else:
-                ai_models = "未配置"
+        # 主模型名称（精简 provider 前缀）
+        primary_model = str(status.get("ai_primary_model") or "").strip() or "未配置"
+        # Agent 模型名称
+        agent_model = str(status.get("ai_agent_model") or "").strip() or "未配置"
 
         # 新闻搜索：任一搜索源可用即为 ✅
         search_any = any(
@@ -225,7 +218,8 @@ class StatusCommand(BotCommand):
             "🟢 **系统状态**",
             "",
             f"Telegram：{telegram_status}",
-            f"AI模型：{ai_models}",
+            f"主模型：{primary_model}",
+            f"Agent模型：{agent_model}",
             f"行情数据：{ok(status.get('market_data_available'))}",
             f"新闻搜索：{ok(search_any)}",
             f"自选股：{status['stock_count']} 只",
