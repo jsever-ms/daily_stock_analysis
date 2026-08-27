@@ -31,34 +31,52 @@ def _mock_quote(code: str) -> dict:
 
 
 def _mock_history(code: str, days: int) -> dict:
-    return {"data": [{"close": 18.0 + i * 0.05} for i in range(20)]}
+    """Return 20 records with date + close so local trend computation works."""
+    import datetime
+    records = []
+    for i in range(20):
+        d = (datetime.date.today() - datetime.timedelta(days=20 - i)).isoformat()
+        records.append({
+            "date": d,
+            "open": 18.0 + i * 0.05,
+            "high": 18.2 + i * 0.05,
+            "low": 17.8 + i * 0.05,
+            "close": 18.0 + i * 0.05,
+            "volume": 1_000_000 + i * 10_000,
+        })
+    return {"data": records}
 
 
-def _mock_trend(code: str) -> dict:
-    return {
-        "ma_alignment": "多头排列",
-        "trend_strength": "强势",
-        "trend_status": "上升趋势",
-        "macd_status": "金叉",
-        "macd_signal": "看涨",
-        "rsi_6": 62,
-        "rsi_12": 55,
-        "rsi_status": "中性偏强",
-        "volume_status": "放量上攻",
-        "volume_ratio_5d": 1.3,
-        "bias_ma5": 2.1,
-        "bias_ma10": 3.5,
-        "bias_ma20": 5.2,
-        "ma5": 18.2,
-        "ma10": 17.9,
-        "ma20": 17.5,
-        "support_levels": [17.8, 17.2],
-        "resistance_levels": [19.0, 20.5],
-        "buy_signal": "买入",
-        "signal_score": 7,
-        "signal_reasons": ["均线多头", "MACD金叉", "放量突破"],
-        "risk_factors": ["大盘调整风险", "板块轮动"],
-    }
+def _make_mock_trend_result():
+    """Create a mock TrendAnalysisResult with sample values."""
+    from src.stock_analyzer import TrendAnalysisResult, TrendStatus, VolumeStatus, MACDStatus, RSIStatus, BuySignal
+
+    result = TrendAnalysisResult(code="300846")
+    result.trend_status = TrendStatus.BULL
+    result.ma_alignment = "多头排列"
+    result.trend_strength = 7.5
+    result.ma5 = 18.2
+    result.ma10 = 17.9
+    result.ma20 = 17.5
+    result.current_price = 18.50
+    result.bias_ma5 = 2.1
+    result.bias_ma10 = 3.5
+    result.bias_ma20 = 5.2
+    result.volume_status = VolumeStatus.HEAVY_VOLUME_UP
+    result.volume_ratio_5d = 1.3
+    result.volume_trend = "放量上攻"
+    result.support_levels = [17.8, 17.2]
+    result.resistance_levels = [19.0, 20.5]
+    result.macd_status = MACDStatus.BULLISH
+    result.macd_signal = "金叉"
+    result.rsi_6 = 62.0
+    result.rsi_12 = 55.0
+    result.rsi_status = RSIStatus.NEUTRAL
+    result.buy_signal = BuySignal.BUY
+    result.signal_score = 7
+    result.signal_reasons = ["均线多头", "MACD金叉", "放量突破"]
+    result.risk_factors = ["大盘调整风险", "板块轮动"]
+    return result
 
 
 def _mock_news(code: str, _query: str) -> dict:
@@ -120,19 +138,23 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
 
     def test_fast_pipeline_llm_ok_returns_five_section_summary(self):
         """Mock normal LLM response should produce 5-section summary, not fallback."""
+        mock_trend_result = _make_mock_trend_result()
         with patch(
-            "bot.commands.ask._handle_get_realtime_quote",
+            "src.agent.tools.data_tools._handle_get_realtime_quote",
             side_effect=_mock_quote,
         ), patch(
-            "bot.commands.ask._handle_get_daily_history",
+            "src.agent.tools.data_tools._handle_get_daily_history",
             side_effect=_mock_history,
         ), patch(
-            "bot.commands.ask._handle_analyze_trend",
-            side_effect=_mock_trend,
-        ), patch(
-            "bot.commands.ask._handle_search_stock_news",
+            "src.agent.tools.search_tools._handle_search_stock_news",
             side_effect=_mock_news,
-        ):
+        ), patch(
+            "src.stock_analyzer.StockTrendAnalyzer",
+        ) as mock_analyzer_cls:
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_trend_result
+            mock_analyzer_cls.return_value = mock_analyzer
+
             with patch.object(
                 self.command,
                 "_build_fast_pipeline_prompt",
@@ -143,7 +165,7 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     self._five_section_summary(),
                 )
                 with patch(
-                    "bot.commands.ask.LLMToolAdapter",
+                    "src.agent.llm_adapter.LLMToolAdapter",
                     return_value=mock_adapter,
                 ):
                     result = self.command._fast_pipeline_analyze(
@@ -168,19 +190,23 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
 
     def test_fast_pipeline_llm_provider_error_falls_back(self):
         """LLM provider=error should trigger fallback to raw data."""
+        mock_trend_result = _make_mock_trend_result()
         with patch(
-            "bot.commands.ask._handle_get_realtime_quote",
+            "src.agent.tools.data_tools._handle_get_realtime_quote",
             side_effect=_mock_quote,
         ), patch(
-            "bot.commands.ask._handle_get_daily_history",
+            "src.agent.tools.data_tools._handle_get_daily_history",
             side_effect=_mock_history,
         ), patch(
-            "bot.commands.ask._handle_analyze_trend",
-            side_effect=_mock_trend,
-        ), patch(
-            "bot.commands.ask._handle_search_stock_news",
+            "src.agent.tools.search_tools._handle_search_stock_news",
             side_effect=_mock_news,
-        ):
+        ), patch(
+            "src.stock_analyzer.StockTrendAnalyzer",
+        ) as mock_analyzer_cls:
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_trend_result
+            mock_analyzer_cls.return_value = mock_analyzer
+
             with patch.object(
                 self.command,
                 "_build_fast_pipeline_prompt",
@@ -193,7 +219,7 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     model="",
                 )
                 with patch(
-                    "bot.commands.ask.LLMToolAdapter",
+                    "src.agent.llm_adapter.LLMToolAdapter",
                     return_value=mock_adapter,
                 ):
                     result = self.command._fast_pipeline_analyze(
@@ -204,29 +230,33 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     )
 
         self.assertIsInstance(result, BotResponse)
-        # 不包含五段式标记
-        self.assertNotIn("📊 **首都在线（300846）**", result.text)
-        # 包含原始数据（fallback）
+        # 包含 fallback 标记（而非五段式 LLM 摘要）
+        self.assertIn("⚠️ AI 分析摘要生成失败，展示原始数据", result.text)
+        # 包含原始数据
         self.assertIn("首都在线", result.text)
-        self.assertIn("18.50", result.text)
+        self.assertIn("18.5", result.text)
         self.assertIn("⏱ 数据获取", result.text)
         self.assertIn("AI总结", result.text)
 
     def test_fast_pipeline_llm_empty_response_falls_back(self):
         """LLM returns empty content should trigger LLM_RESPONSE_PARSE_FAILED fallback."""
+        mock_trend_result = _make_mock_trend_result()
         with patch(
-            "bot.commands.ask._handle_get_realtime_quote",
+            "src.agent.tools.data_tools._handle_get_realtime_quote",
             side_effect=_mock_quote,
         ), patch(
-            "bot.commands.ask._handle_get_daily_history",
+            "src.agent.tools.data_tools._handle_get_daily_history",
             side_effect=_mock_history,
         ), patch(
-            "bot.commands.ask._handle_analyze_trend",
-            side_effect=_mock_trend,
-        ), patch(
-            "bot.commands.ask._handle_search_stock_news",
+            "src.agent.tools.search_tools._handle_search_stock_news",
             side_effect=_mock_news,
-        ):
+        ), patch(
+            "src.stock_analyzer.StockTrendAnalyzer",
+        ) as mock_analyzer_cls:
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_trend_result
+            mock_analyzer_cls.return_value = mock_analyzer
+
             with patch.object(
                 self.command,
                 "_build_fast_pipeline_prompt",
@@ -238,7 +268,7 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     provider="gemini",
                 )
                 with patch(
-                    "bot.commands.ask.LLMToolAdapter",
+                    "src.agent.llm_adapter.LLMToolAdapter",
                     return_value=mock_adapter,
                 ):
                     result = self.command._fast_pipeline_analyze(
@@ -249,26 +279,30 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     )
 
         self.assertIsInstance(result, BotResponse)
-        # 不包含五段式标记
-        self.assertNotIn("📊 **首都在线（300846）**", result.text)
+        # 包含 fallback 标记（而非五段式 LLM 摘要）
+        self.assertIn("⚠️ AI 分析摘要生成失败，展示原始数据", result.text)
         # 包含原始数据（fallback）
         self.assertIn("首都在线", result.text)
 
     def test_fast_pipeline_llm_short_response_falls_back(self):
         """LLM returns very short content (<50 chars) should trigger LLM_RESPONSE_PARSE_FAILED."""
+        mock_trend_result = _make_mock_trend_result()
         with patch(
-            "bot.commands.ask._handle_get_realtime_quote",
+            "src.agent.tools.data_tools._handle_get_realtime_quote",
             side_effect=_mock_quote,
         ), patch(
-            "bot.commands.ask._handle_get_daily_history",
+            "src.agent.tools.data_tools._handle_get_daily_history",
             side_effect=_mock_history,
         ), patch(
-            "bot.commands.ask._handle_analyze_trend",
-            side_effect=_mock_trend,
-        ), patch(
-            "bot.commands.ask._handle_search_stock_news",
+            "src.agent.tools.search_tools._handle_search_stock_news",
             side_effect=_mock_news,
-        ):
+        ), patch(
+            "src.stock_analyzer.StockTrendAnalyzer",
+        ) as mock_analyzer_cls:
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_trend_result
+            mock_analyzer_cls.return_value = mock_analyzer
+
             with patch.object(
                 self.command,
                 "_build_fast_pipeline_prompt",
@@ -280,7 +314,7 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     provider="gemini",
                 )
                 with patch(
-                    "bot.commands.ask.LLMToolAdapter",
+                    "src.agent.llm_adapter.LLMToolAdapter",
                     return_value=mock_adapter,
                 ):
                     result = self.command._fast_pipeline_analyze(
@@ -291,26 +325,30 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     )
 
         self.assertIsInstance(result, BotResponse)
-        # 不包含五段式标记
-        self.assertNotIn("📊 **首都在线（300846）**", result.text)
+        # 包含 fallback 标记（而非五段式 LLM 摘要）
+        self.assertIn("⚠️ AI 分析摘要生成失败，展示原始数据", result.text)
         # 包含原始数据（fallback）
         self.assertIn("首都在线", result.text)
 
     def test_fast_pipeline_llm_exception_falls_back(self):
         """Exception during LLM call should trigger LLM_CALL_FAILED fallback."""
+        mock_trend_result = _make_mock_trend_result()
         with patch(
-            "bot.commands.ask._handle_get_realtime_quote",
+            "src.agent.tools.data_tools._handle_get_realtime_quote",
             side_effect=_mock_quote,
         ), patch(
-            "bot.commands.ask._handle_get_daily_history",
+            "src.agent.tools.data_tools._handle_get_daily_history",
             side_effect=_mock_history,
         ), patch(
-            "bot.commands.ask._handle_analyze_trend",
-            side_effect=_mock_trend,
-        ), patch(
-            "bot.commands.ask._handle_search_stock_news",
+            "src.agent.tools.search_tools._handle_search_stock_news",
             side_effect=_mock_news,
-        ):
+        ), patch(
+            "src.stock_analyzer.StockTrendAnalyzer",
+        ) as mock_analyzer_cls:
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_trend_result
+            mock_analyzer_cls.return_value = mock_analyzer
+
             with patch.object(
                 self.command,
                 "_build_fast_pipeline_prompt",
@@ -319,7 +357,7 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                 mock_adapter = MagicMock()
                 mock_adapter.call_text.side_effect = RuntimeError("Connection refused")
                 with patch(
-                    "bot.commands.ask.LLMToolAdapter",
+                    "src.agent.llm_adapter.LLMToolAdapter",
                     return_value=mock_adapter,
                 ):
                     result = self.command._fast_pipeline_analyze(
@@ -330,8 +368,8 @@ class FastPipelineSummaryTestCase(unittest.TestCase):
                     )
 
         self.assertIsInstance(result, BotResponse)
-        # 不包含五段式标记
-        self.assertNotIn("📊 **首都在线（300846）**", result.text)
+        # 包含 fallback 标记（而非五段式 LLM 摘要）
+        self.assertIn("⚠️ AI 分析摘要生成失败，展示原始数据", result.text)
         # 包含原始数据（fallback）
         self.assertIn("首都在线", result.text)
         # 包含时序信息

@@ -51,8 +51,8 @@ class _FastPipelineConfig:
             setattr(self._orig, name, value)
 
 # Fast Pipeline 超时配置
-_FAST_PIPELINE_DATA_TIMEOUT_S = 30.0   # 并行数据获取总超时
-_FAST_PIPELINE_NEWS_TIMEOUT_S = 12.0   # 情报增强数据超时
+_FAST_PIPELINE_TOOL_TIMEOUT_S = 8.0    # 单个工具超时（快速降级）
+_FAST_PIPELINE_NEWS_TIMEOUT_S = 10.0   # 情报增强数据超时
 _FAST_PIPELINE_LLM_TIMEOUT_S = 45.0    # 最终 LLM 调用超时
 _FAST_PIPELINE_TOTAL_TIMEOUT_S = 90.0  # 快速问股总超时兜底
 
@@ -368,35 +368,139 @@ class AskCommand(BotCommand):
         """
         t_start = time.monotonic()
 
-        # ── Phase 1: 并行数据获取（行情 + 历史K线 + 技术指标） ──
+        # ── Phase 1: 并行数据获取（行情 + 历史K线） + 本地技术计算 ──
+        # 策略：先并行获取 quote 和 history（各自独立超时，失败不阻塞）；
+        #       若 history 成功，用已获取数据在本地计算 trend（无需再次网络请求）。
+        #       避免 trend 工具内部重复拉取 60 日 K 线拖慢流程。
         t_data_start = time.monotonic()
         data_results: Dict[str, Any] = {}
         data_errors: Dict[str, str] = {}
+        tool_timings: Dict[str, str] = {}  # 用于诊断日志
 
         from src.agent.tools.data_tools import _handle_get_realtime_quote, _handle_get_daily_history
-        from src.agent.tools.analysis_tools import _handle_analyze_trend
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = {
-                pool.submit(_handle_get_realtime_quote, code): "quote",
-                pool.submit(_handle_get_daily_history, code, 60): "history",
-                pool.submit(_handle_analyze_trend, code): "trend",
-            }
+        def _run_tool_safe(name: str, fn, *args, timeout: float = _FAST_PIPELINE_TOOL_TIMEOUT_S):
+            """执行单个工具并记录耗时/状态/异常。"""
+            t0 = time.monotonic()
             try:
-                for future in as_completed(futures, timeout=_FAST_PIPELINE_DATA_TIMEOUT_S):
-                    name = futures[future]
-                    try:
-                        data_results[name] = future.result(timeout=5)
-                    except Exception as exc:
-                        data_errors[name] = str(exc)
-                        logger.warning("[FastPipeline] %s failed for %s: %s", name, code, exc)
+                with ThreadPoolExecutor(max_workers=1) as _pool:
+                    fut = _pool.submit(fn, *args)
+                    result = fut.result(timeout=timeout)
+                elapsed = time.monotonic() - t0
+                tool_timings[name] = f"{name} {elapsed:.1f}s ✅"
+                logger.info("[FastPipeline] %s for %s: %.1fs ✅", name, code, elapsed)
+                return result
             except FutureTimeoutError:
-                logger.warning("[FastPipeline] Data phase timed out for %s", code)
-                for name, future in futures.items():
-                    if name not in data_results and name not in data_errors:
-                        data_errors[name] = "timeout"
+                elapsed = time.monotonic() - t0
+                tool_timings[name] = f"{name} {elapsed:.1f}s ❌ timeout"
+                data_errors[name] = f"timeout ({elapsed:.1f}s)"
+                logger.warning("[FastPipeline] %s timeout for %s (%.1fs)", name, code, elapsed)
+                return None
+            except Exception as exc:
+                elapsed = time.monotonic() - t0
+                tool_timings[name] = f"{name} {elapsed:.1f}s ❌ {type(exc).__name__}"
+                data_errors[name] = str(exc)
+                logger.warning("[FastPipeline] %s failed for %s (%.1fs): %s", name, code, elapsed, exc)
+                return None
+
+        # Step 1: 并行获取 quote 和 history（各自独立超时 8s）
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_quote = pool.submit(_run_tool_safe, "quote", _handle_get_realtime_quote, code)
+            fut_history = pool.submit(_run_tool_safe, "history", _handle_get_daily_history, code, 60)
+            quote_result = fut_quote.result()
+            history_result = fut_history.result()
+
+        if quote_result is not None:
+            data_results["quote"] = quote_result
+        if history_result is not None:
+            data_results["history"] = history_result
+
+        # Step 2: 本地技术分析（复用已获取的 history 数据，不重复网络请求）
+        history_data = history_result if history_result is not None else None
+        if history_data and isinstance(history_data, dict):
+            hist_records = history_data.get("data") or []
+            if isinstance(hist_records, list) and len(hist_records) >= 20:
+                t0 = time.monotonic()
+                try:
+                    import pandas as pd
+                    from src.stock_analyzer import StockTrendAnalyzer
+
+                    df = pd.DataFrame(hist_records)
+                    # 确保必要的列存在
+                    required_cols = {"close", "date"}
+                    if required_cols.issubset(df.columns):
+                        analyzer = StockTrendAnalyzer()
+                        result = analyzer.analyze(df, code)
+                        trend_data = {
+                            "code": result.code,
+                            "trend_status": result.trend_status.value,
+                            "ma_alignment": result.ma_alignment,
+                            "trend_strength": result.trend_strength,
+                            "ma5": result.ma5,
+                            "ma10": result.ma10,
+                            "ma20": result.ma20,
+                            "ma60": result.ma60,
+                            "current_price": result.current_price,
+                            "bias_ma5": round(result.bias_ma5, 2),
+                            "bias_ma10": round(result.bias_ma10, 2),
+                            "bias_ma20": round(result.bias_ma20, 2),
+                            "volume_status": result.volume_status.value,
+                            "volume_ratio_5d": round(result.volume_ratio_5d, 2),
+                            "volume_trend": result.volume_trend,
+                            "support_levels": result.support_levels,
+                            "resistance_levels": result.resistance_levels,
+                            "macd_dif": round(result.macd_dif, 4),
+                            "macd_dea": round(result.macd_dea, 4),
+                            "macd_bar": round(result.macd_bar, 4),
+                            "macd_status": result.macd_status.value,
+                            "macd_signal": result.macd_signal,
+                            "rsi_6": round(result.rsi_6, 2),
+                            "rsi_12": round(result.rsi_12, 2),
+                            "rsi_24": round(result.rsi_24, 2),
+                            "rsi_status": result.rsi_status.value,
+                            "rsi_signal": result.rsi_signal,
+                            "buy_signal": result.buy_signal.value,
+                            "signal_score": result.signal_score,
+                            "signal_reasons": result.signal_reasons,
+                            "risk_factors": result.risk_factors,
+                        }
+                        elapsed = time.monotonic() - t0
+                        tool_timings["trend"] = f"trend {elapsed:.1f}s ✅ (local)"
+                        logger.info("[FastPipeline] trend (local) for %s: %.1fs ✅", code, elapsed)
+                        data_results["trend"] = trend_data
+                    else:
+                        elapsed = time.monotonic() - t0
+                        tool_timings["trend"] = f"trend {elapsed:.1f}s ❌ missing_cols"
+                        data_errors["trend"] = f"history missing columns: {required_cols - set(df.columns)}"
+                        logger.warning("[FastPipeline] trend (local) for %s missing cols: %s", code, required_cols - set(df.columns))
+                except Exception as exc:
+                    elapsed = time.monotonic() - t0
+                    tool_timings["trend"] = f"trend {elapsed:.1f}s ❌ {type(exc).__name__}"
+                    data_errors["trend"] = str(exc)
+                    logger.warning("[FastPipeline] trend (local) failed for %s (%.1fs): %s", code, elapsed, exc)
+            elif hist_records:
+                # 历史数据不足 20 条，尝试远端 trend 工具
+                t0 = time.monotonic()
+                from src.agent.tools.analysis_tools import _handle_analyze_trend
+                trend_result = _run_tool_safe("trend", _handle_analyze_trend, code)
+                if trend_result is not None:
+                    data_results["trend"] = trend_result
+            else:
+                tool_timings["trend"] = "trend skipped (no history)"
+                data_errors["trend"] = "no history data available"
+        else:
+            # 完全无历史数据，尝试远端 trend 工具
+            t0 = time.monotonic()
+            from src.agent.tools.analysis_tools import _handle_analyze_trend
+            trend_result = _run_tool_safe("trend", _handle_analyze_trend, code)
+            if trend_result is not None:
+                data_results["trend"] = trend_result
 
         t_data_tech = time.monotonic() - t_data_start
+
+        # 工具诊断日志（一行输出便于问题定位）
+        diag_line = " | ".join(tool_timings.values()) if tool_timings else "no tools completed"
+        logger.info("[FastPipeline] Tool diagnostics for %s: %s", code, diag_line)
 
         # ── Phase 2: 情报增强数据（Best-effort，超时或失败立即跳过） ──
         t_intel_start = time.monotonic()

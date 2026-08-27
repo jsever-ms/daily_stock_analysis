@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [改进] Fast Pipeline 工具级性能诊断：新增 `_run_tool_safe` 函数，对每个数据源工具（quote/history/trend/news）分别记录耗时、成功/失败/exception，单行诊断日志输出；各工具设置独立 8s 超时，失败立即降级，不允许单工具阻塞 40~50s
+- [改进] Fast Pipeline 本地技术计算：trend 分析复用已获取的 K 线数据在本地用 pandas + StockTrendAnalyzer 计算 MA/MACD/RSI/量价，消除重复网络请求（原 `_handle_analyze_trend` 内部重新拉取 60 日历史数据是 49.4s 瓶颈根因）；数据不足 20 条时回退远端 trend 工具
+- [测试] `test_fast_pipeline_summary.py` 更新 mock 数据与 patch 路径，验证本地 trend 分析路径；修复 `src/agent/__init__.py` 增加 `llm_adapter` 懒加载代理以支持 `patch("src.agent.llm_adapter.LLMToolAdapter")`
 - [新功能] 新增 `python main.py --telegram-only` 常驻模式：仅启动 Telegram Long Polling 机器人（不启动 uvicorn/Web/ASGI 服务、不执行股票分析/定时任务），主线程阻塞保活持续监听 `/start`、`/help`、`/status` 等命令，用于 Railway 等平台将 Telegram 机器人作为 24 小时常驻进程部署；需配置 `TELEGRAM_BOT_TOKEN`。
 - [改进] `/ask` 默认简版改为简报模式（仅 Step1~3 数据采集 + 直接输出五段式摘要，跳过 Step4 完整报告 LLM），大幅缩短响应时间；`/ask detail` 保留完整四阶段分析。
 - [改进] `/ask` 默认快速问股改为固定 Fast Pipeline 架构：并行获取行情/历史K线/技术指标（MA/MACD/RSI/量价），增强数据（新闻/资金流）最佳失效超时跳过，单次 LLM 调用生成五段式简报，消除多轮 Agent 循环（LLM 调用次数从 5 次降至 1 次）；`/ask detail` 保留完整 Agent 多轮调用。时序显示改为「数据获取 Xs | 技术计算 Xs | 情报 Xs | AI总结 Xs | 总耗时 Xs」。

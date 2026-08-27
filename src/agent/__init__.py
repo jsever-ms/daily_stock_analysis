@@ -37,6 +37,9 @@ def __getattr__(name):
     if name == "AgentMemory":
         from src.agent.memory import AgentMemory
         return AgentMemory
+    if name == "llm_adapter":
+        import src.agent.llm_adapter as _llm_adapter
+        return _llm_adapter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
