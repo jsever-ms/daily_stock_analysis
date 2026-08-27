@@ -548,7 +548,7 @@ def resolve_skill_prompt_state(config=None, skills: Optional[List[str]] = None) 
     )
 
 
-def build_agent_executor(config=None, skills: Optional[List[str]] = None):
+def build_agent_executor(config=None, skills: Optional[List[str]] = None, brief_mode: bool = False):
     """Build and return a configured AgentExecutor (or future orchestrator).
 
     When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
@@ -561,6 +561,8 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         skills: Skill ids to activate.  When *None* falls back to
                 ``config.agent_skills``; if that is also empty falls back to
                 the central default skill set.
+        brief_mode: 当为 True 时使用简报模式（跳过 Step4 完整报告，直接输出
+                五段式摘要）。用于 /ask 默认简版，/ask detail 使用 False。
 
     Returns:
         A ready-to-call :class:`src.agent.executor.AgentExecutor` instance.
@@ -620,6 +622,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             0,
             field_name="agent_orchestrator_timeout_s",
         ),
+        brief_mode=brief_mode,
     )
 
 

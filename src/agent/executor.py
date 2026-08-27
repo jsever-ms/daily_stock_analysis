@@ -458,6 +458,66 @@ CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数�
 {language_section}
 """
 
+BRIEF_CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数据工具和可切换交易技能，负责快速生成股票分析简报。
+
+{market_guidelines}
+
+## 工作流程（必须严格按阶段顺序执行，每阶段等工具结果返回后再进入下一阶段）
+
+**第一阶段 · 行情与K线**（首先执行）
+- `get_realtime_quote` 获取实时行情
+- `get_daily_history` 获取历史K线
+
+**第二阶段 · 技术与筹码**（等第一阶段结果返回后执行）
+- `analyze_trend` 获取技术指标
+- `get_chip_distribution` 获取筹码分布
+
+**第三阶段 · 情报搜索**（等前两阶段完成后执行）
+- `search_stock_news` 搜索最新资讯、减持、业绩预告等风险信号
+
+**数据收集完成后**，基于所有工具返回的真实数据，直接输出以下格式的分析简报——不要输出 JSON 或长篇报告：
+
+📊 **股票名称（代码）**
+
+🎯 **核心结论**
+买入/观望/减仓/卖出
+综合评分：X/10
+一句话理由
+
+📈 **关键依据**
+• 依据1
+（最多 4 条）
+
+⚠️ **主要风险**
+• 风险1
+（最多 3 条，无可靠风险则不输出本段）
+
+🎯 **操作点位**
+• 理想买入区：xxx
+• 支撑位：xxx
+• 止损位：xxx
+• 压力位/目标位：xxx
+（暂无可靠点位则输出"暂无可靠点位"）
+
+🔄 **触发条件**
+• 转强条件：xxx
+• 失效条件：xxx
+
+> ⚠️ 禁止将不同阶段的工具合并到同一次调用中。
+{default_skill_policy_section}
+
+## 规则
+
+1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+2. **应用交易技能** — 评估每个激活技能的条件，在简报中体现技能判断结果。
+3. **精简输出** — 只输出上述格式的简报，不输出 JSON 或长篇分析。
+4. **风险优先** — 必须排查风险（股东减持、业绩预警、监管问题）。
+5. **工具失败处理** — 记录失败原因，使用已有数据继续分析，不重复调用失败工具。
+
+{skills_section}
+{language_section}
+"""
+
 CODEX_CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，负责基于 DSA 已保存的数据解答用户的股票投资问题。
 
 ## 可用数据
@@ -542,6 +602,7 @@ def prepare_agent_chat(
     use_codex_prompt: bool,
     include_provider_trace: bool,
     strict_initial_stock_scope: bool = False,
+    brief_mode: bool = False,
 ) -> PreparedAgentChat:
     """Build the existing Chat prompt order without choosing an Agent backend."""
     scope_resolution = resolve_stock_scope(
@@ -559,7 +620,9 @@ def prepare_agent_chat(
         default_skill_policy_section = f"\n{default_skill_policy}\n"
     report_language = normalize_report_language((effective_context or {}).get("report_language", "zh"))
     stock_code = (effective_context or {}).get("stock_code", "")
-    if use_codex_prompt:
+    if brief_mode:
+        prompt_template = BRIEF_CHAT_SYSTEM_PROMPT
+    elif use_codex_prompt:
         prompt_template = CODEX_CHAT_SYSTEM_PROMPT
     elif use_legacy_default_prompt:
         prompt_template = LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT
@@ -660,6 +723,7 @@ class AgentExecutor:
         use_legacy_default_prompt: bool = False,
         max_steps: int = 10,
         timeout_seconds: Optional[float] = None,
+        brief_mode: bool = False,
     ):
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
@@ -668,6 +732,7 @@ class AgentExecutor:
         self.use_legacy_default_prompt = use_legacy_default_prompt
         self.max_steps = max_steps
         self.timeout_seconds = timeout_seconds
+        self.brief_mode = brief_mode
 
     def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentResult:
         """Execute the agent loop for a given task.
@@ -741,6 +806,7 @@ class AgentExecutor:
             use_legacy_default_prompt=self.use_legacy_default_prompt,
             use_codex_prompt=False,
             include_provider_trace=True,
+            brief_mode=self.brief_mode,
         )
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": prepared.system_prompt},

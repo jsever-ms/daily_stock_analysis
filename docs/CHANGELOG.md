@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
 - [新功能] 新增 `python main.py --telegram-only` 常驻模式：仅启动 Telegram Long Polling 机器人（不启动 uvicorn/Web/ASGI 服务、不执行股票分析/定时任务），主线程阻塞保活持续监听 `/start`、`/help`、`/status` 等命令，用于 Railway 等平台将 Telegram 机器人作为 24 小时常驻进程部署；需配置 `TELEGRAM_BOT_TOKEN`。
+- [改进] `/ask` 默认简版改为简报模式（仅 Step1~3 数据采集 + 直接输出五段式摘要，跳过 Step4 完整报告 LLM），大幅缩短响应时间；`/ask detail` 保留完整四阶段分析。
 - [新功能] Telegram 增加双向监听：配置 `TELEGRAM_BOT_TOKEN` 后默认以 Long Polling（getUpdates，offset 递增 + 长轮询）在后台线程接收指令，封装为 `BotMessage` 走 `dispatcher.dispatch_async()` 分发，并用现有 `TelegramSender` 回复到原会话；支持断线指数退避重连与优雅停止，代理复用 `HTTP(S)_PROXY`（含 SOCKS5，需 `pysocks`）；可通过 `TELEGRAM_POLLING_ENABLED=false` 关闭仍保留单向推送。
 - [修复] Telegram 命令解析强化：`parse_message` 剥离 `/cmd@BotName` 群聊命令后缀；分发器对以命令前缀开头的文本增加 NL 路由守卫，确保 `/status`、`/batch`、`/help` 等一律命中本地命令处理器，绝不透传 LLM 作闲聊。
 - [修复] Telegram 命令与 AI 普通聊天完全隔离：命令识别一律由程序完成，不再交给 LLM 判断。所有以 `/` 开头的消息先进入 Command Router，已知命令执行后立即返回；未知命令统一回复「⚠️ 未知命令：/xxx\n发送 /help 查看当前可用命令。」并立即 return，绝不透传 LLM。

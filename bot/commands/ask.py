@@ -262,14 +262,19 @@ class AskCommand(BotCommand):
         """Analyze a single stock.
 
         Args:
-            detail_mode: 若为 True，输出完整原始分析（调试友好）；
-                否则输出手机友好的结构化摘要，绝不通过截断详细报告生成。
+            detail_mode: 若为 True，执行完整 Agent 四阶段（含 Step4 完整报告）；
+                否则使用简报模式（仅 Step1~3 数据采集，直接输出五段式摘要）。
         """
         try:
             from src.agent.factory import build_agent_executor
-            from src.agent.runner import parse_dashboard_json
 
-            executor = build_agent_executor(config, skills=[skill_id] if skill_id else None)
+            # 简版使用 brief_mode=True，跳过 Step4 完整报告，LLM 输出直接是五段式简报格式
+            # detail 模式使用完整 Agent（含 Step4 完整报告生成）
+            executor = build_agent_executor(
+                config,
+                skills=[skill_id] if skill_id else None,
+                brief_mode=not detail_mode,
+            )
             user_msg = self._build_user_message(code, skill_id, skill_text)
             session_id = f"{message.platform}_{message.user_id}:ask_{code}_{uuid.uuid4()}"
             result = executor.chat(
@@ -290,35 +295,14 @@ class AskCommand(BotCommand):
                         header + result.content + "\n\n" + timing_lines
                     )
 
-                # 手机友好结构化摘要：同一份分析结果，仅 renderer 不同
-                # 先用 executor 的 dashboard 字段（仅 run() 解析），
-                # 再手动从 content 中解析 json（chat() 不自动解析 dashboard）
-                dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
-                if dashboard is None:
-                    try:
-                        parsed = parse_dashboard_json(result.content)
-                        if isinstance(parsed, dict):
-                            dashboard = parsed
-                    except Exception:
-                        dashboard = None
+                # 简版：result.content 已经是五段式简报格式（由 BRIEF_CHAT_SYSTEM_PROMPT 指引 LLM 输出）
+                # 不需再解析 dashboard JSON 或二次提炼
+                if result.content and len(result.content.strip()) > 50:
+                    return BotResponse.markdown_response(
+                        result.content + "\n\n" + timing_lines
+                    )
 
-                if dashboard:
-                    summary = self._format_mobile_summary(code, skill_name, dashboard)
-                    # 尾部追加时序
-                    return BotResponse.markdown_response(summary + "\n\n" + timing_lines)
-
-                # 兜底：dashboard 完全不可用时，用 LLM 从完整报告提炼结构化摘要
-                # （仅一次轻量调用，不重新抓行情、不重新搜索、不重新执行 Agent）
-                try:
-                    extracted = self._lightweight_summarize(result.content, code)
-                    if extracted:
-                        return BotResponse.markdown_response(
-                            extracted + "\n\n" + timing_lines
-                        )
-                except Exception as exc:
-                    logger.warning("Lightweight summarization failed: %s", exc)
-
-                # 最终降级：显示可用的基本信息 + 引导 detail 模式
+                # 极低概率兜底：LLM 输出为空或过短，显示可用信息
                 fallback = self._fallback_summary(result.content, code, skill_name)
                 return BotResponse.text_response(fallback + "\n\n" + timing_lines)
 
@@ -432,12 +416,18 @@ class AskCommand(BotCommand):
         lines = [
             f"📊 **{code}** | 技能: {skill_name}",
             "",
-            "⚠️ 无法生成完整结构化摘要，以下为分析报告中的可用信息：",
-            "",
         ]
 
-        # 提取 stock_name, sentiment, decision 等顶层字段
+        # 如果内容非空，先展示原始内容
+        if content and len(content.strip()) > 10:
+            lines.append(content.strip())
+            lines.append("")
+            lines.append("—" * 20)
+            lines.append("")
+
+        # 尝试从 JSON 格式提取字段
         import re
+        json_fields_found = False
         for field, label in [
             ("stock_name", "股票名称"),
             ("sentiment_score", "评分"),
@@ -450,12 +440,21 @@ class AskCommand(BotCommand):
             if m:
                 val = m.group(1).strip()
                 if val and val not in ("", "无", "none"):
+                    if not json_fields_found:
+                        lines.append("可用字段：")
+                        json_fields_found = True
                     lines.append(f"• {label}：{val}")
 
         # 提取 sentiment_score 数字
         m = re.search(r'"sentiment_score"\s*:\s*(\d+)', content)
         if m:
+            if not json_fields_found:
+                lines.append("可用字段：")
+                json_fields_found = True
             lines.append(f"• 综合评分：{m.group(1)}/100")
+
+        if not json_fields_found and not (content and len(content.strip()) > 10):
+            lines.append("暂无可靠数据")
 
         lines.append("")
         lines.append(f"查看完整分析：/ask {code} detail")
