@@ -46,8 +46,8 @@ class StartCommand(BotCommand):
         return BotResponse.markdown_response(
             "👋 **欢迎使用股票分析助手！**\n\n"
             "我可以帮你：\n"
-            "• 分析单只股票：`/analyze 600519`\n"
-            "• 使用 Agent 技能分析：`/ask 600519`\n"
+            "• 快速问股：`/ask 600519`\n"
+            "• 后台深度分析：`/analyze 600519`\n"
             "• 批量分析自选股：`/batch`\n"
             "• 大盘复盘：`/market`\n"
             "• 深度研究：`/research 600519`\n"

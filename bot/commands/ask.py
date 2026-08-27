@@ -21,6 +21,7 @@ from bot.commands.base import BotCommand, CATEGORY_AI
 from bot.models import BotMessage, BotResponse
 from data_provider.base import canonical_stock_code
 from src.config import get_config
+from src.services.stock_resolver import resolve_stock_label
 from src.storage import get_db
 
 # ── 进度回调类型 ────────────────────────────────────────────────
@@ -463,7 +464,7 @@ class AskCommand(BotCommand):
                     from src.notification_sender.telegram_sender import TelegramSender
                     sender = TelegramSender(config)
                     bot_token = getattr(config, "telegram_bot_token", "")
-                    stock_label = code
+                    stock_label = resolve_stock_label(code)
                     t_start = time.monotonic()
 
                     # 先发一条初始进度消息，拿到 message_id
