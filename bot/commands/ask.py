@@ -267,6 +267,7 @@ class AskCommand(BotCommand):
         """
         try:
             from src.agent.factory import build_agent_executor
+            from src.agent.runner import parse_dashboard_json
 
             executor = build_agent_executor(config, skills=[skill_id] if skill_id else None)
             user_msg = self._build_user_message(code, skill_id, skill_text)
@@ -279,23 +280,47 @@ class AskCommand(BotCommand):
 
             if result.success:
                 skill_name = self._resolve_skill_name(skill_id)
-                if detail_mode:
-                    # 完整原始输出
-                    header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
-                    return BotResponse.text_response(header + result.content)
+                # 时序信息（从 Agent chat 的 step_timings 中提取）
+                timing_lines = self._format_timing_summary(result)
 
-                # 手机友好结构化摘要：仅从 dashboard 字段重组，绝不截断详细报告
+                if detail_mode:
+                    # 完整原始输出 + 时序诊断
+                    header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
+                    return BotResponse.text_response(
+                        header + result.content + "\n\n" + timing_lines
+                    )
+
+                # 手机友好结构化摘要：同一份分析结果，仅 renderer 不同
+                # 先用 executor 的 dashboard 字段（仅 run() 解析），
+                # 再手动从 content 中解析 json（chat() 不自动解析 dashboard）
                 dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
+                if dashboard is None:
+                    try:
+                        parsed = parse_dashboard_json(result.content)
+                        if isinstance(parsed, dict):
+                            dashboard = parsed
+                    except Exception:
+                        dashboard = None
+
                 if dashboard:
                     summary = self._format_mobile_summary(code, skill_name, dashboard)
-                    return BotResponse.markdown_response(summary)
+                    # 尾部追加时序
+                    return BotResponse.markdown_response(summary + "\n\n" + timing_lines)
 
-                # 无可用 dashboard 时，引导用户使用 detail 模式，绝不能截断原始内容
-                return BotResponse.text_response(
-                    f"📊 {code} | 技能: {skill_name}\n\n"
-                    f"⚠️ 无法生成简版报告，该分析结果不包含结构化数据。\n\n"
-                    f"查看完整分析：/{self.name} {code} detail"
-                )
+                # 兜底：dashboard 完全不可用时，用 LLM 从完整报告提炼结构化摘要
+                # （仅一次轻量调用，不重新抓行情、不重新搜索、不重新执行 Agent）
+                try:
+                    extracted = self._lightweight_summarize(result.content, code)
+                    if extracted:
+                        return BotResponse.markdown_response(
+                            extracted + "\n\n" + timing_lines
+                        )
+                except Exception as exc:
+                    logger.warning("Lightweight summarization failed: %s", exc)
+
+                # 最终降级：显示可用的基本信息 + 引导 detail 模式
+                fallback = self._fallback_summary(result.content, code, skill_name)
+                return BotResponse.text_response(fallback + "\n\n" + timing_lines)
 
             return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
 
@@ -303,6 +328,138 @@ class AskCommand(BotCommand):
             logger.error("Ask command failed: %s", exc)
             logger.exception("Ask error details:")
             return BotResponse.text_response(f"⚠️ 问股执行出错: {str(exc)}")
+
+    @staticmethod
+    def _format_timing_summary(result) -> str:
+        """从 AgentResult 的 step_timings 生成时序摘要。"""
+        step_timings = getattr(result, "step_timings", None) or []
+        total_duration = getattr(result, "total_duration_s", 0)
+
+        if not step_timings:
+            if total_duration > 0:
+                return f"⏱ 总耗时：{total_duration:.1f}s"
+            return ""
+
+        lines = []
+        for s in step_timings:
+            step_num = s.get("step", "?")
+            llm_s = s.get("llm_duration_s", 0)
+            tool_s = s.get("tool_duration_s", 0)
+            tools = s.get("tools", [])
+            total_s = s.get("total_step_s", 0)
+
+            if tools:
+                tools_str = " → ".join(tools)
+                lines.append(
+                    f"  Step {step_num}：LLM {llm_s:.1f}s + 工具 {tool_s:.1f}s"
+                    f"（{tools_str}）"
+                )
+            else:
+                lines.append(f"  Step {step_num}：LLM {llm_s:.1f}s（最终报告）")
+
+        total = f"⏱ 总耗时：{total_duration:.1f}s（{len(step_timings)} 步）"
+        return total + "\n" + "\n".join(lines)
+
+    @staticmethod
+    def _lightweight_summarize(content: str, code: str) -> Optional[str]:
+        """从 Agent 完整报告文本中提炼结构化摘要的轻量 LLM 调用。
+
+        仅一次轻量调用，无工具调用、不重新抓取数据。
+        返回 None 表示提炼失败。
+        """
+        try:
+            import litellm
+
+            config = get_config()
+            model = getattr(config, "litellm_model", None) or "deepseek/deepseek-chat"
+            report_text = content
+            if len(report_text) > 8000:
+                report_text = report_text[:8000] + "\n...[截断]"
+
+            prompt = f"""你是一个股票分析摘要助手。请根据以下完整分析报告，提取结构化摘要。
+
+要求：
+- 只从报告中提取已有信息，不要编造数字
+- 用中文输出
+- 输出格式如下（不要带多余前缀）：
+
+📊 **股票名称（{code}）**
+
+🎯 **核心结论**
+买入/观望/减仓/卖出
+综合评分：X/10
+一句话理由
+
+📈 **关键依据**
+• 依据1
+• 依据2
+（最多 4 条）
+
+⚠️ **主要风险**
+• 风险1
+（最多 3 条，无可靠风险则不输出本段）
+
+🎯 **操作点位**
+• 理想买入区：xxx
+• 支撑位：xxx
+• 止损位：xxx
+• 压力位/目标位：xxx
+（暂无可靠点位则输出"暂无可靠点位"）
+
+🔄 **触发条件**
+• 转强条件：xxx
+• 失效条件：xxx
+
+以下是完整分析报告：
+{report_text}"""
+
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=800,
+            )
+            text = response.choices[0].message.content.strip()
+            if len(text) < 50:
+                return None
+            return text
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fallback_summary(content: str, code: str, skill_name: str) -> str:
+        """最终降级：从内容中提取可用的基本信息，不截断。"""
+        lines = [
+            f"📊 **{code}** | 技能: {skill_name}",
+            "",
+            "⚠️ 无法生成完整结构化摘要，以下为分析报告中的可用信息：",
+            "",
+        ]
+
+        # 提取 stock_name, sentiment, decision 等顶层字段
+        import re
+        for field, label in [
+            ("stock_name", "股票名称"),
+            ("sentiment_score", "评分"),
+            ("decision_type", "决策"),
+            ("trend_prediction", "趋势"),
+            ("operation_advice", "操作建议"),
+            ("risk_warning", "风险提示"),
+        ]:
+            m = re.search(rf'"{field}"\s*:\s*"([^"]+)"', content)
+            if m:
+                val = m.group(1).strip()
+                if val and val not in ("", "无", "none"):
+                    lines.append(f"• {label}：{val}")
+
+        # 提取 sentiment_score 数字
+        m = re.search(r'"sentiment_score"\s*:\s*(\d+)', content)
+        if m:
+            lines.append(f"• 综合评分：{m.group(1)}/100")
+
+        lines.append("")
+        lines.append(f"查看完整分析：/ask {code} detail")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_mobile_summary(code: str, skill_name: str, dashboard: dict) -> str:

@@ -59,6 +59,10 @@ class AgentResult:
     backend: str = ""
     error_code: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    # Per-step timing breakdown (from RunLoopResult.step_timings)
+    step_timings: List[Dict[str, Any]] = field(default_factory=list)
+    # Total wall clock duration of the loop in seconds
+    total_duration_s: float = 0.0
 
 
 # ============================================================
@@ -820,6 +824,8 @@ class AgentExecutor:
         )
 
         model_str = loop_result.model
+        loop_timing = loop_result.step_timings or []
+        loop_duration = sum(s.get("total_step_s", 0) for s in loop_timing) if loop_timing else 0.0
 
         if parse_dashboard and loop_result.success:
             dashboard = parse_dashboard_json(loop_result.content)
@@ -838,6 +844,8 @@ class AgentExecutor:
                 model=model_str,
                 error=None if dashboard else "Failed to parse dashboard JSON from agent response",
                 messages=loop_result.messages,
+                step_timings=loop_timing,
+                total_duration_s=loop_duration,
             )
 
         return AgentResult(
@@ -851,6 +859,8 @@ class AgentExecutor:
             model=model_str,
             error=loop_result.error,
             messages=loop_result.messages,
+            step_timings=loop_timing,
+            total_duration_s=loop_duration,
         )
 
     def _build_user_message(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:

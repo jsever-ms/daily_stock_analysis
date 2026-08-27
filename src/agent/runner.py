@@ -103,6 +103,9 @@ class RunLoopResult:
     failure_reason: Optional[StageFailureReason] = None
     # Raw messages list at the end of the loop (callers may want to persist)
     messages: List[Dict[str, Any]] = field(default_factory=list)
+    # Per-step timing breakdown: each entry is a dict with
+    # step, llm_duration_s, tool_duration_s, tools[], total_step_s, tool_results[]
+    step_timings: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def model(self) -> str:
@@ -273,6 +276,7 @@ def _build_timeout_result(
     provider_used: str,
     models_used: List[str],
     messages: List[Dict[str, Any]],
+    step_timings: List[Dict[str, Any]] = (),
 ) -> RunLoopResult:
     elapsed = time.time() - start_time
     return RunLoopResult(
@@ -286,6 +290,7 @@ def _build_timeout_result(
         error=f"Agent timed out after {elapsed:.2f}s (limit: {max_wall_clock_seconds:.2f}s)",
         failure_reason=StageFailureReason.TIMEOUT,
         messages=messages,
+        step_timings=list(step_timings),
     )
 
 
@@ -300,6 +305,7 @@ def _build_budget_guard_result(
     messages: List[Dict[str, Any]],
     remaining_timeout_s: float,
     min_step_budget_s: float,
+    step_timings: List[Dict[str, Any]] = (),
 ) -> RunLoopResult:
     elapsed = time.time() - start_time
     return RunLoopResult(
@@ -316,6 +322,7 @@ def _build_budget_guard_result(
         ),
         failure_reason=StageFailureReason.BUDGET_SKIP,
         messages=messages,
+        step_timings=list(step_timings),
     )
 
 
@@ -372,6 +379,7 @@ def run_agent_loop(
     total_tokens = 0
     provider_used = ""
     models_used: List[str] = []
+    step_timings: List[Dict[str, Any]] = []
 
     # Minimum seconds needed for a meaningful LLM round-trip.  If the
     # remaining budget is positive but below this threshold, the step will
@@ -428,6 +436,7 @@ def run_agent_loop(
                     messages=messages,
                     remaining_timeout_s=remaining_timeout,
                     min_step_budget_s=_MIN_STEP_BUDGET_S,
+                    step_timings=step_timings,
                 ))
 
             if remaining_timeout <= 0:
@@ -441,9 +450,12 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
+                step_timings=step_timings,
             ))
 
         logger.info("Agent step %d/%d", step + 1, max_steps)
+
+        step_start = time.time()
 
         # --- progress: thinking ---
         if progress_callback:
@@ -456,11 +468,13 @@ def run_agent_loop(
             progress_callback(stream_event("thinking", step=step + 1, message=thinking_msg))
 
         # --- LLM call ---
+        llm_start = time.time()
         response = llm_adapter.call_with_tools(
             messages,
             tool_decls,
             timeout=remaining_timeout,
         )
+        llm_duration = time.time() - llm_start
         provider_used = response.provider
         total_tokens += (response.usage or {}).get("total_tokens", 0)
         m = getattr(response, "model", "") or response.provider
@@ -473,6 +487,14 @@ def run_agent_loop(
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
             logger.warning("Agent timed out after LLM call at step %d", step + 1)
+            step_timings.append({
+                "step": step + 1,
+                "llm_duration_s": round(llm_duration, 2),
+                "tool_duration_s": 0.0,
+                "tools": [],
+                "tool_results": [],
+                "total_step_s": round(time.time() - step_start, 2),
+            })
             return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
@@ -482,6 +504,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
+                step_timings=step_timings,
             ))
 
         if response.tool_calls:
@@ -519,6 +542,7 @@ def run_agent_loop(
             # the caller's explicit per-run override — highest priority in the
             # first-wins chain (Issue #1890 contract) — while ``remaining_timeout``
             # is the unbreakable outer wall-clock cap for this batch.
+            tool_exec_start = time.time()
             tool_results = _execute_tools(
                 response.tool_calls,
                 tool_registry,
@@ -530,6 +554,19 @@ def run_agent_loop(
                 tool_wait_timeout_seconds=remaining_timeout,
                 stock_scope=stock_scope,
             )
+            tool_duration = time.time() - tool_exec_start
+
+            step_timings.append({
+                "step": step + 1,
+                "llm_duration_s": round(llm_duration, 2),
+                "tool_duration_s": round(tool_duration, 2),
+                "tools": [tc.name for tc in response.tool_calls],
+                "tool_results": [
+                    {"tool": tr["tc"].name, "success": tr.get("success", True)}
+                    for tr in tool_results
+                ],
+                "total_step_s": round(time.time() - step_start, 2),
+            })
 
             # Append tool results preserving original call order
             tc_order = {tc.id: i for i, tc in enumerate(response.tool_calls)}
@@ -556,16 +593,26 @@ def run_agent_loop(
                     provider_used=provider_used,
                     models_used=models_used,
                     messages=messages,
+                    step_timings=step_timings,
                 ))
 
         else:
             # ---- final answer branch ----
+            total_duration = time.time() - start_time
             logger.info(
                 "Agent completed in %d steps (%.1fs, %d tokens)",
                 step + 1,
-                time.time() - start_time,
+                total_duration,
                 total_tokens,
             )
+            step_timings.append({
+                "step": step + 1,
+                "llm_duration_s": round(llm_duration, 2),
+                "tool_duration_s": 0.0,
+                "tools": [],
+                "tool_results": [],
+                "total_step_s": round(time.time() - step_start, 2),
+            })
             if progress_callback:
                 progress_callback(stream_event("generating", step=step + 1, message="正在生成最终分析..."))
 
@@ -583,6 +630,7 @@ def run_agent_loop(
                 error=final_content if is_error else None,
                 failure_reason=(StageFailureReason.STAGE_FAILURE if is_error else None),
                 messages=messages,
+                step_timings=step_timings,
             ))
 
     # Max steps exceeded
@@ -598,6 +646,7 @@ def run_agent_loop(
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
         failure_reason=StageFailureReason.STAGE_FAILURE,
         messages=messages,
+        step_timings=step_timings,
     ))
 
 
