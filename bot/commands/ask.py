@@ -318,6 +318,12 @@ class AskCommand(BotCommand):
 
         return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
 
+    @staticmethod
+    def _init_llm_adapter(config):
+        """初始化 LLMToolAdapter，复用项目现有通道路由/API key 注入逻辑。"""
+        from src.agent.llm_adapter import LLMToolAdapter
+        return LLMToolAdapter(config)
+
     def _fast_pipeline_analyze(
         self,
         config,
@@ -330,11 +336,11 @@ class AskCommand(BotCommand):
         调用链（对比旧 Agent 多轮循环）：
         - 旧：LLM→tool→LLM→tool→LLM→tool→LLM→tool→LLM（5 次 LLM 调用）
         - 新：并行 tool→LLM（1 次 LLM 调用）
-        """
-        import litellm
 
+        最终 LLM 调用复用项目现有 LLMToolAdapter.call_text()，走已配置的
+        LITELLM_MODEL + LLM_CHANNELS 通道路由，不自行创建 litellm client。
+        """
         t_start = time.monotonic()
-        model = getattr(config, "litellm_model", None) or "deepseek/deepseek-chat"
 
         # ── Phase 1: 并行数据获取（行情 + 历史K线 + 技术指标） ──
         t_data_start = time.monotonic()
@@ -385,7 +391,7 @@ class AskCommand(BotCommand):
 
         t_intel = time.monotonic() - t_intel_start
 
-        # ── Phase 3: 单次 LLM 调用生成五段式简报 ──
+        # ── Phase 3: 单次 LLM 调用生成五段式简报（复用项目 LLMToolAdapter） ──
         t_llm_start = time.monotonic()
 
         # 提取结构化数据
@@ -473,18 +479,48 @@ class AskCommand(BotCommand):
             data_errors=data_errors,
         )
 
+        # 复用项目现有 LLMToolAdapter（走 LITELLM_MODEL + LLM_CHANNELS 通道路由）
+        llm_result = None
+        llm_error_category = None
         try:
-            response = litellm.completion(
-                model=model,
+            from src.agent.llm_adapter import LLMToolAdapter
+
+            adapter = LLMToolAdapter(config)
+            llm_response = adapter.call_text(
                 messages=[{"role": "user", "content": llm_prompt}],
                 temperature=0.3,
                 max_tokens=1200,
                 timeout=_FAST_PIPELINE_LLM_TIMEOUT_S,
             )
-            summary = response.choices[0].message.content.strip()
+
+            if llm_response.provider == "error":
+                llm_error_category = "LLM_CALL_FAILED"
+                logger.error(
+                    "[FastPipeline] LLM_CALL_FAILED for %s: provider=error, msg=%s, model=%s",
+                    code, llm_response.content, llm_response.model,
+                )
+            elif llm_response.content and len(llm_response.content.strip()) > 50:
+                llm_result = llm_response.content.strip()
+                logger.info(
+                    "[FastPipeline] LLM summary OK for %s: model=%s, provider=%s, len=%d",
+                    code, llm_response.model, llm_response.provider, len(llm_response.content),
+                )
+            else:
+                llm_error_category = "LLM_RESPONSE_PARSE_FAILED"
+                content_preview = (llm_response.content or "")[:200]
+                logger.error(
+                    "[FastPipeline] LLM_RESPONSE_PARSE_FAILED for %s: "
+                    "model=%s, provider=%s, content_len=%d, preview=%r",
+                    code, llm_response.model, llm_response.provider,
+                    len(llm_response.content or ""), content_preview,
+                )
         except Exception as exc:
-            logger.error("[FastPipeline] LLM summary failed for %s: %s", code, exc)
-            summary = self._fallback_content_summary(code, stock_name, data_results, news_data)
+            llm_error_category = "LLM_CALL_FAILED"
+            logger.error(
+                "[FastPipeline] LLM_CALL_FAILED for %s: type=%s, msg=%s",
+                code, type(exc).__name__, exc,
+                exc_info=True,
+            )
 
         t_llm = time.monotonic() - t_llm_start
         total_duration = time.monotonic() - t_start
@@ -498,9 +534,8 @@ class AskCommand(BotCommand):
             f" | 总耗时 {total_duration:.1f}s"
         )
 
-        # 若 LLM 返回了有效内容，追加时序信息
-        if summary and len(summary.strip()) > 50:
-            return BotResponse.markdown_response(summary + "\n\n" + timing_line)
+        if llm_result is not None:
+            return BotResponse.markdown_response(llm_result + "\n\n" + timing_line)
 
         # 兜底：直接展示原始数据
         fallback = self._fallback_content_summary(code, stock_name, data_results, news_data)
