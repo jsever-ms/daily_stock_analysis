@@ -13,6 +13,7 @@ import logging
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from bot.commands.base import BotCommand, CATEGORY_AI
@@ -22,6 +23,12 @@ from src.config import get_config
 from src.storage import get_db
 
 logger = logging.getLogger(__name__)
+
+# Fast Pipeline 超时配置
+_FAST_PIPELINE_DATA_TIMEOUT_S = 30.0   # 并行数据获取总超时
+_FAST_PIPELINE_NEWS_TIMEOUT_S = 12.0   # 情报增强数据超时
+_FAST_PIPELINE_LLM_TIMEOUT_S = 45.0    # 最终 LLM 调用超时
+_FAST_PIPELINE_TOTAL_TIMEOUT_S = 90.0  # 快速问股总超时兜底
 
 
 class AskCommand(BotCommand):
@@ -263,55 +270,476 @@ class AskCommand(BotCommand):
 
         Args:
             detail_mode: 若为 True，执行完整 Agent 四阶段（含 Step4 完整报告）；
-                否则使用简报模式（仅 Step1~3 数据采集，直接输出五段式摘要）。
+                否则使用固定 Fast Pipeline — 并行数据采集 + 单次 LLM 生成五段式简报。
         """
         try:
-            from src.agent.factory import build_agent_executor
+            if detail_mode:
+                return self._analyze_single_agent(config, message, code, skill_id, skill_text)
 
-            # 简版使用 brief_mode=True，跳过 Step4 完整报告，LLM 输出直接是五段式简报格式
-            # detail 模式使用完整 Agent（含 Step4 完整报告生成）
-            executor = build_agent_executor(
-                config,
-                skills=[skill_id] if skill_id else None,
-                brief_mode=not detail_mode,
-            )
-            user_msg = self._build_user_message(code, skill_id, skill_text)
-            session_id = f"{message.platform}_{message.user_id}:ask_{code}_{uuid.uuid4()}"
-            result = executor.chat(
-                message=user_msg,
-                session_id=session_id,
-                context=self._build_execution_context(code, skill_id),
-            )
-
-            if result.success:
-                skill_name = self._resolve_skill_name(skill_id)
-                # 时序信息（从 Agent chat 的 step_timings 中提取）
-                timing_lines = self._format_timing_summary(result)
-
-                if detail_mode:
-                    # 完整原始输出 + 时序诊断
-                    header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
-                    return BotResponse.text_response(
-                        header + result.content + "\n\n" + timing_lines
-                    )
-
-                # 简版：result.content 已经是五段式简报格式（由 BRIEF_CHAT_SYSTEM_PROMPT 指引 LLM 输出）
-                # 不需再解析 dashboard JSON 或二次提炼
-                if result.content and len(result.content.strip()) > 50:
-                    return BotResponse.markdown_response(
-                        result.content + "\n\n" + timing_lines
-                    )
-
-                # 极低概率兜底：LLM 输出为空或过短，显示可用信息
-                fallback = self._fallback_summary(result.content, code, skill_name)
-                return BotResponse.text_response(fallback + "\n\n" + timing_lines)
-
-            return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
+            # 默认快速问股：固定 Fast Pipeline，禁止多轮 Agent 循环
+            return self._fast_pipeline_analyze(config, code, skill_id, skill_text)
 
         except Exception as exc:
             logger.error("Ask command failed: %s", exc)
             logger.exception("Ask error details:")
             return BotResponse.text_response(f"⚠️ 问股执行出错: {str(exc)}")
+
+    def _analyze_single_agent(
+        self,
+        config,
+        message: BotMessage,
+        code: str,
+        skill_id: str,
+        skill_text: str,
+    ) -> BotResponse:
+        """完整 Agent 模式，用于 /ask detail 和 /research。"""
+        from src.agent.factory import build_agent_executor
+
+        executor = build_agent_executor(
+            config,
+            skills=[skill_id] if skill_id else None,
+            brief_mode=False,
+        )
+        user_msg = self._build_user_message(code, skill_id, skill_text)
+        session_id = f"{message.platform}_{message.user_id}:ask_{code}_{uuid.uuid4()}"
+        result = executor.chat(
+            message=user_msg,
+            session_id=session_id,
+            context=self._build_execution_context(code, skill_id),
+        )
+
+        if result.success:
+            skill_name = self._resolve_skill_name(skill_id)
+            timing_lines = self._format_timing_summary(result)
+            header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
+            return BotResponse.text_response(
+                header + result.content + "\n\n" + timing_lines
+            )
+
+        return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")
+
+    def _fast_pipeline_analyze(
+        self,
+        config,
+        code: str,
+        skill_id: str,
+        skill_text: str,
+    ) -> BotResponse:
+        """固定 Fast Pipeline：并行数据采集 + 单次 LLM 生成五段式简报。
+
+        调用链（对比旧 Agent 多轮循环）：
+        - 旧：LLM→tool→LLM→tool→LLM→tool→LLM→tool→LLM（5 次 LLM 调用）
+        - 新：并行 tool→LLM（1 次 LLM 调用）
+        """
+        import litellm
+
+        t_start = time.monotonic()
+        model = getattr(config, "litellm_model", None) or "deepseek/deepseek-chat"
+
+        # ── Phase 1: 并行数据获取（行情 + 历史K线 + 技术指标） ──
+        t_data_start = time.monotonic()
+        data_results: Dict[str, Any] = {}
+        data_errors: Dict[str, str] = {}
+
+        from src.agent.tools.data_tools import _handle_get_realtime_quote, _handle_get_daily_history
+        from src.agent.tools.analysis_tools import _handle_analyze_trend
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {
+                pool.submit(_handle_get_realtime_quote, code): "quote",
+                pool.submit(_handle_get_daily_history, code, 60): "history",
+                pool.submit(_handle_analyze_trend, code): "trend",
+            }
+            try:
+                for future in as_completed(futures, timeout=_FAST_PIPELINE_DATA_TIMEOUT_S):
+                    name = futures[future]
+                    try:
+                        data_results[name] = future.result(timeout=5)
+                    except Exception as exc:
+                        data_errors[name] = str(exc)
+                        logger.warning("[FastPipeline] %s failed for %s: %s", name, code, exc)
+            except FutureTimeoutError:
+                logger.warning("[FastPipeline] Data phase timed out for %s", code)
+                for name, future in futures.items():
+                    if name not in data_results and name not in data_errors:
+                        data_errors[name] = "timeout"
+
+        t_data_tech = time.monotonic() - t_data_start
+
+        # ── Phase 2: 情报增强数据（Best-effort，超时或失败立即跳过） ──
+        t_intel_start = time.monotonic()
+        news_data: Optional[Dict[str, Any]] = None
+        try:
+            from src.agent.tools.search_tools import _handle_search_stock_news
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                news_future = pool.submit(_handle_search_stock_news, code, "")
+                try:
+                    news_data = news_future.result(timeout=_FAST_PIPELINE_NEWS_TIMEOUT_S)
+                except FutureTimeoutError:
+                    logger.warning("[FastPipeline] News fetch timed out for %s (skipped)", code)
+                except Exception as exc:
+                    logger.warning("[FastPipeline] News fetch failed for %s: %s (skipped)", code, exc)
+        except Exception as exc:
+            logger.warning("[FastPipeline] News module load failed: %s (skipped)", exc)
+
+        t_intel = time.monotonic() - t_intel_start
+
+        # ── Phase 3: 单次 LLM 调用生成五段式简报 ──
+        t_llm_start = time.monotonic()
+
+        # 提取结构化数据
+        quote = data_results.get("quote", {}) or {}
+        history = data_results.get("history", {}) or {}
+        trend = data_results.get("trend", {}) or {}
+
+        stock_name = quote.get("name") or code
+        current_price = quote.get("price")
+        change_pct = quote.get("change_pct")
+        pe_ratio = quote.get("pe_ratio")
+        pb_ratio = quote.get("pb_ratio")
+        total_mv = quote.get("total_mv")
+        circ_mv = quote.get("circ_mv")
+        volume_ratio = quote.get("volume_ratio")
+        turnover_rate = quote.get("turnover_rate")
+
+        # 历史数据摘要
+        history_records = []
+        if isinstance(history, dict):
+            hist_data = history.get("data") or []
+            if isinstance(hist_data, list):
+                history_records = hist_data[-20:]  # 最近 20 条
+
+        # 趋势/技术指标
+        ma_alignment = trend.get("ma_alignment", "")
+        trend_strength = trend.get("trend_strength", "")
+        trend_status = trend.get("trend_status", "")
+        macd_status = trend.get("macd_status", "")
+        macd_signal = trend.get("macd_signal", "")
+        rsi_6 = trend.get("rsi_6")
+        rsi_12 = trend.get("rsi_12")
+        rsi_status = trend.get("rsi_status", "")
+        volume_status = trend.get("volume_status", "")
+        volume_ratio_5d = trend.get("volume_ratio_5d")
+        bias_ma5 = trend.get("bias_ma5")
+        bias_ma10 = trend.get("bias_ma10")
+        bias_ma20 = trend.get("bias_ma20")
+        ma5 = trend.get("ma5")
+        ma10 = trend.get("ma10")
+        ma20 = trend.get("ma20")
+        support_levels = trend.get("support_levels")
+        resistance_levels = trend.get("resistance_levels")
+        buy_signal = trend.get("buy_signal", "")
+        signal_score = trend.get("signal_score")
+        signal_reasons = trend.get("signal_reasons", [])
+        risk_factors = trend.get("risk_factors", [])
+
+        # 构建结构化的 LLM 输入 Prompt
+        llm_prompt = self._build_fast_pipeline_prompt(
+            code=code,
+            stock_name=stock_name,
+            current_price=current_price,
+            change_pct=change_pct,
+            pe_ratio=pe_ratio,
+            pb_ratio=pb_ratio,
+            total_mv=total_mv,
+            circ_mv=circ_mv,
+            volume_ratio=volume_ratio,
+            turnover_rate=turnover_rate,
+            history_records=history_records,
+            ma_alignment=ma_alignment,
+            trend_strength=trend_strength,
+            trend_status=trend_status,
+            macd_status=macd_status,
+            macd_signal=macd_signal,
+            rsi_6=rsi_6,
+            rsi_12=rsi_12,
+            rsi_status=rsi_status,
+            volume_status=volume_status,
+            volume_ratio_5d=volume_ratio_5d,
+            bias_ma5=bias_ma5,
+            bias_ma10=bias_ma10,
+            bias_ma20=bias_ma20,
+            ma5=ma5,
+            ma10=ma10,
+            ma20=ma20,
+            support_levels=support_levels,
+            resistance_levels=resistance_levels,
+            buy_signal=buy_signal,
+            signal_score=signal_score,
+            signal_reasons=signal_reasons,
+            risk_factors=risk_factors,
+            news_data=news_data,
+            data_errors=data_errors,
+        )
+
+        try:
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": llm_prompt}],
+                temperature=0.3,
+                max_tokens=1200,
+                timeout=_FAST_PIPELINE_LLM_TIMEOUT_S,
+            )
+            summary = response.choices[0].message.content.strip()
+        except Exception as exc:
+            logger.error("[FastPipeline] LLM summary failed for %s: %s", code, exc)
+            summary = self._fallback_content_summary(code, stock_name, data_results, news_data)
+
+        t_llm = time.monotonic() - t_llm_start
+        total_duration = time.monotonic() - t_start
+
+        # 时序信息
+        timing_line = (
+            f"⏱ 数据获取 {t_data_tech:.1f}s"
+            f" | 技术计算 {t_data_tech:.1f}s"
+            f" | 情报 {t_intel:.1f}s"
+            f" | AI总结 {t_llm:.1f}s"
+            f" | 总耗时 {total_duration:.1f}s"
+        )
+
+        # 若 LLM 返回了有效内容，追加时序信息
+        if summary and len(summary.strip()) > 50:
+            return BotResponse.markdown_response(summary + "\n\n" + timing_line)
+
+        # 兜底：直接展示原始数据
+        fallback = self._fallback_content_summary(code, stock_name, data_results, news_data)
+        return BotResponse.text_response(fallback + "\n\n" + timing_line)
+
+    @staticmethod
+    def _build_fast_pipeline_prompt(
+        code: str,
+        stock_name: str,
+        current_price: Any,
+        change_pct: Any,
+        pe_ratio: Any,
+        pb_ratio: Any,
+        total_mv: Any,
+        circ_mv: Any,
+        volume_ratio: Any,
+        turnover_rate: Any,
+        history_records: List[Dict[str, Any]],
+        ma_alignment: str,
+        trend_strength: str,
+        trend_status: str,
+        macd_status: str,
+        macd_signal: str,
+        rsi_6: Any,
+        rsi_12: Any,
+        rsi_status: str,
+        volume_status: str,
+        volume_ratio_5d: Any,
+        bias_ma5: Any,
+        bias_ma10: Any,
+        bias_ma20: Any,
+        ma5: Any,
+        ma10: Any,
+        ma20: Any,
+        support_levels: Any,
+        resistance_levels: Any,
+        buy_signal: str,
+        signal_score: Any,
+        signal_reasons: Any,
+        risk_factors: Any,
+        news_data: Optional[Dict[str, Any]],
+        data_errors: Dict[str, str],
+    ) -> str:
+        """构建 Fast Pipeline 最终 LLM 调用的 Prompt。
+
+        输入已由 Python 工具计算好的结构化数据，LLM 只需组织成五段式简报输出。
+        """
+        # 格式化实时行情
+        price_str = f"{current_price}" if current_price is not None else "N/A"
+        chg_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+
+        pe_str = f"{pe_ratio:.2f}" if isinstance(pe_ratio, (int, float)) else "N/A"
+        pb_str = f"{pb_ratio:.2f}" if isinstance(pb_ratio, (int, float)) else "N/A"
+        mv_str = ""
+        if total_mv is not None:
+            mv_str += f"总市值: {total_mv/1e8:.2f}亿"
+        if circ_mv is not None:
+            mv_str += f"  流通市值: {circ_mv/1e8:.2f}亿"
+
+        vol_ratio_str = f"{volume_ratio:.2f}" if isinstance(volume_ratio, (int, float)) else "N/A"
+        turn_str = f"{turnover_rate:.2f}%" if isinstance(turnover_rate, (int, float)) else "N/A"
+
+        # 最近 K 线摘要
+        kline_summary = ""
+        if history_records:
+            close_prices = [r.get("close") for r in history_records if r.get("close") is not None]
+            if close_prices:
+                low_5d = min(close_prices[-5:]) if len(close_prices) >= 5 else min(close_prices)
+                high_5d = max(close_prices[-5:]) if len(close_prices) >= 5 else max(close_prices)
+                kline_summary = (
+                    f"近5日最低: {low_5d}  近5日最高: {high_5d}"
+                )
+
+        # 构建技术指标摘要
+        tech_parts = []
+        if ma_alignment:
+            tech_parts.append(f"均线排列: {ma_alignment}")
+        if trend_strength:
+            tech_parts.append(f"趋势强度: {trend_strength}")
+        if trend_status:
+            tech_parts.append(f"趋势状态: {trend_status}")
+        if macd_status and macd_signal:
+            tech_parts.append(f"MACD: {macd_status} ({macd_signal})")
+        if rsi_status:
+            tech_parts.append(f"RSI(6): {rsi_6}  RSI(12): {rsi_12}  状态: {rsi_status}")
+        if volume_status:
+            tech_parts.append(f"量价状态: {volume_status}")
+        if isinstance(volume_ratio_5d, (int, float)):
+            tech_parts.append(f"5日量比: {volume_ratio_5d:.2f}")
+        if bias_ma5 is not None:
+            tech_parts.append(f"乖离率MA5: {bias_ma5:+.2f}%  MA10: {bias_ma10:+.2f}%  MA20: {bias_ma20:+.2f}%")
+        if ma5 is not None:
+            tech_parts.append(f"MA5: {ma5}  MA10: {ma10}  MA20: {ma20}")
+        if buy_signal and signal_score is not None:
+            tech_parts.append(f"信号: {buy_signal} (评分: {signal_score})")
+        if signal_reasons:
+            reasons = signal_reasons if isinstance(signal_reasons, list) else [signal_reasons]
+            tech_parts.append(f"信号理由: {'; '.join(str(r) for r in reasons[:5])}")
+        if risk_factors:
+            risks = risk_factors if isinstance(risk_factors, list) else [risk_factors]
+            tech_parts.append(f"风险因素: {'; '.join(str(r) for r in risks[:5])}")
+
+        support_str = ""
+        if support_levels:
+            if isinstance(support_levels, list):
+                support_str = ", ".join(str(s) for s in support_levels[:3])
+            else:
+                support_str = str(support_levels)
+        resistance_str = ""
+        if resistance_levels:
+            if isinstance(resistance_levels, list):
+                resistance_str = ", ".join(str(r) for r in resistance_levels[:3])
+            else:
+                resistance_str = str(resistance_levels)
+
+        tech_summary = "\n".join(f"  - {p}" for p in tech_parts)
+
+        # 新闻情报
+        news_summary = ""
+        if news_data and isinstance(news_data, dict) and news_data.get("success"):
+            items = news_data.get("results") or []
+            news_lines = []
+            for item in items[:5]:
+                if isinstance(item, dict):
+                    title = item.get("title") or item.get("news_title") or ""
+                    if title:
+                        news_lines.append(f"  - {title}")
+            if news_lines:
+                news_summary = "最新新闻:\n" + "\n".join(news_lines)
+            else:
+                news_summary = "有新闻搜索返回，但无有效标题"
+        elif news_data and isinstance(news_data, dict) and news_data.get("error"):
+            news_summary = f"新闻搜索不可用: {news_data['error']}"
+        else:
+            news_summary = "新闻搜索未配置或已跳过"
+
+        # 数据错误提示
+        error_notes = ""
+        if data_errors:
+            error_notes = "以下数据获取失败: " + "; ".join(f"{k}={v}" for k, v in data_errors.items())
+
+        return f"""你是一个股票分析专家。请根据以下系统采集的结构化数据，直接生成一份五段式股票分析简报。
+
+## 数据摘要
+
+### 实时行情
+股票: {stock_name}（{code}）
+当前价: {price_str}  涨跌幅: {chg_str}
+PE: {pe_str}  PB: {pb_str}
+{mv_str}
+量比: {vol_ratio_str}  换手率: {turn_str}
+{kline_summary}
+
+### 技术指标
+{tech_summary if tech_parts else "（技术分析数据不可用）"}
+
+### 支撑/压力
+支撑位: {support_str if support_str else "暂无数据"}
+压力位: {resistance_str if resistance_str else "暂无数据"}
+
+### 情报
+{news_summary}
+
+{error_notes}
+
+## 输出要求
+
+请严格按照以下五段式格式输出（不要带任何额外前缀或注释），每条依据/风险要求简洁具体：
+
+📊 **股票名称（代码）**
+
+🎯 **核心结论**
+买入/观望/减仓/卖出
+综合评分：X/10
+一句话理由
+
+📈 **关键依据**
+• 依据1
+（最多 4 条，基于上述数据）
+
+⚠️ **主要风险**
+• 风险1
+（最多 3 条，无可靠风险则不输出本段）
+
+🎯 **操作点位**
+• 理想买入区：xxx
+• 支撑位：xxx
+• 止损位：xxx
+• 压力位/目标位：xxx
+（暂无可靠点位则输出"暂无可靠点位"）
+
+🔄 **触发条件**
+• 转强条件：xxx
+• 失效条件：xxx"""
+
+    @staticmethod
+    def _fallback_content_summary(
+        code: str,
+        stock_name: str,
+        data_results: Dict[str, Any],
+        news_data: Optional[Dict[str, Any]],
+    ) -> str:
+        """LLM 调用失败时的兜底展示。"""
+        quote = data_results.get("quote", {}) or {}
+        trend = data_results.get("trend", {}) or {}
+
+        price = quote.get("price", "N/A")
+        chg = quote.get("change_pct", "N/A")
+        if isinstance(chg, (int, float)):
+            chg = f"{chg:+.2f}%"
+
+        lines = [
+            f"📊 **{stock_name}（{code}）**",
+            "",
+            "⚠️ AI 分析摘要生成失败，展示原始数据：",
+            "",
+            f"当前价: {price}  涨跌幅: {chg}",
+        ]
+
+        ma_alignment = trend.get("ma_alignment")
+        if ma_alignment:
+            lines.append(f"均线排列: {ma_alignment}")
+
+        macd = trend.get("macd_status")
+        if macd:
+            lines.append(f"MACD: {macd}")
+
+        rsi = trend.get("rsi_status")
+        if rsi:
+            lines.append(f"RSI: {rsi}")
+
+        buy_signal = trend.get("buy_signal")
+        signal_score = trend.get("signal_score")
+        if buy_signal and signal_score is not None:
+            lines.append(f"信号: {buy_signal} (评分: {signal_score})")
+
+        lines.append("")
+        lines.append(f"查看完整分析：/ask {code} detail")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_timing_summary(result) -> str:
