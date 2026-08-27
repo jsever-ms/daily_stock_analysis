@@ -1,0 +1,30 @@
+name: Anspire Smoke
+
+# 仅允许手动触发，不执行股票分析流程，不调用 LLM。
+# 验证 Anspire Search API 连通性：Key 是否存在、HTTP 状态、返回结果。
+on:
+  workflow_dispatch: {}
+
+jobs:
+  anspire-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装最小依赖（仅 requests）
+        run: |
+          pip install --quiet --disable-pip-version-check requests
+
+      - name: 运行 Anspire Search Smoke Test
+        run: |
+          python .github/scripts/test_anspire_smoke.py

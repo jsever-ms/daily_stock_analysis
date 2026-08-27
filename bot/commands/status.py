@@ -126,6 +126,7 @@ class StatusCommand(BotCommand):
         status["search_serpapi"] = len(config.serpapi_keys) > 0
         status["search_minimax"] = len(config.minimax_api_keys) > 0
         status["search_searxng"] = config.has_searxng_enabled()
+        status["search_anspire"] = len(config.anspire_api_keys) > 0
 
         # 行情数据：数据源优先级非空即视为已配置（免费源无需 key，腾讯/新浪默认可用）
         market_priority = (getattr(config, "realtime_source_priority", "") or "").strip()
@@ -211,6 +212,7 @@ class StatusCommand(BotCommand):
             for key in (
                 "search_bocha", "search_tavily", "search_brave",
                 "search_serpapi", "search_minimax", "search_searxng",
+                "search_anspire",
             )
         )
 
@@ -283,6 +285,7 @@ class StatusCommand(BotCommand):
             f"• SerpAPI: {icon(status['search_serpapi'])}",
             f"• MiniMax: {icon(status['search_minimax'])}",
             f"• SearXNG: {icon(status['search_searxng'])}",
+            f"• Anspire: {icon(status['search_anspire'])}",
             "",
             "**📢 通知渠道**",
             f"• 企业微信: {icon(status['notify_wechat'])}",

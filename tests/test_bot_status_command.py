@@ -256,3 +256,31 @@ def test_status_command_supports_legacy_key_compatibility_without_explicit_litel
         assert "AI 服务未配置" not in text
     finally:
         Config.reset_instance()
+
+
+def test_status_command_reports_anspire_search_status():
+    """Verify search_anspire is populated and reflected in summary + detail."""
+    config_with_key = Config(
+        stock_list=["600519"],
+        anspire_api_keys=["sk-anspire-test"],
+    )
+    config_without_key = Config(
+        stock_list=["600519"],
+        anspire_api_keys=[],
+    )
+    command = StatusCommand()
+
+    # With Anspire key
+    status = command._collect_status(config_with_key)
+    assert status["search_anspire"] is True
+    text = command._format_status_detail(status, "telegram")
+    assert "Anspire: ✅" in text
+    # Simple status should also show ✅
+    simple = command._format_status_summary(status)
+    assert "新闻搜索：✅" in simple
+
+    # Without Anspire key
+    status = command._collect_status(config_without_key)
+    assert status["search_anspire"] is False
+    text = command._format_status_detail(status, "telegram")
+    assert "Anspire: ❌" in text
