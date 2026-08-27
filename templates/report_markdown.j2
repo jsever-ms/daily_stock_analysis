@@ -24,14 +24,174 @@
 {% set core = dashboard.get('core_conclusion') or {} %}
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set data_persp = dashboard.get('data_perspective') or {} %}
+{% set phase_decision = dashboard.get('phase_decision') or {} %}
+{% set signal_attr = dashboard.get('signal_attribution') or {} %}
+{% set strategy_synthesis = normalize_strategy_synthesis_payload(dashboard.get('strategy_synthesis')) %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
 {% if e.empty_news_disclosure %}
 {{ e.empty_news_disclosure }}
 {% endif %}
+
+{# ====== 1. 决策仪表盘 ====== #}
+### 🎯 {{ labels.dashboard_title }}
+
+**{{ e.signal_emoji }} {{ e.signal_text }}** | {{ localize_trend_prediction(result.trend_prediction, report_language) }}
+
+> **{{ labels.one_sentence_label }}**: {{ core.get('one_sentence', result.analysis_summary) }}
+
+⏰ **{{ labels.time_sensitivity_label }}**: {{ core.get('time_sensitivity', labels.default_time_sensitivity) }}
+
+{% set pos_advice = core.get('position_advice', {}) %}
+{% if pos_advice %}
+| {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
+|---------|---------|
+| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
+| 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
+{% endif %}
+
+{% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
+{% if signal_attribution_has_content(signal_attr) %}
+**{{ labels.signal_attribution_heading }}**:
+{% if signal_attr_weights %}
+{% for key, value in signal_attr_weights %}
+{% if key == 'technical_indicators' %}- 📈 {{ labels.technical_indicators_label }}: {{ value }}%{% endif %}
+{% if key == 'news_sentiment' %}- 📰 {{ labels.news_sentiment_label }}: {{ value }}%{% endif %}
+{% if key == 'fundamentals' %}- 💼 {{ labels.fundamentals_label }}: {{ value }}%{% endif %}
+{% if key == 'market_conditions' %}- 🌐 {{ labels.market_conditions_label }}: {{ value }}%{% endif %}
+{% endfor %}
+{% endif %}
+{% if signal_attr.get('strongest_bullish_signal') %}
+- 🟢 **{{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
+{% endif %}
+{% if signal_attr.get('strongest_bearish_signal') %}
+- 🔴 **{{ labels.strongest_bearish_signal_label }}**: {{ signal_attr.get('strongest_bearish_signal') }}
+{% endif %}
+{% endif %}
+
+{% if strategy_synthesis %}
+**{{ labels.strategy_synthesis_heading }}**:
+{% set strategy_confidence = strategy_synthesis.get('confidence') %}
+- {{ labels.strategy_final_signal_label }}: {{ localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language) }} | {{ labels.strategy_consensus_level_label }}: {{ localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language) }} | {{ labels.strategy_confidence_label }}: {{ '%.0f%%' | format(strategy_confidence * 100) if strategy_confidence is number else 'N/A' }}
+{% if localize_strategy_synthesis_summary(strategy_synthesis, report_language) %}
+- {{ labels.strategy_summary_label }}: {{ localize_strategy_synthesis_summary(strategy_synthesis, report_language) }}
+{% endif %}
+{% endif %}
+
+{# ====== 2. 当前操作计划 ====== #}
+{% if battle %}
+### 📋 {{ labels.operation_plan_heading }}
+
+{% set sniper = battle.get('sniper_points', {}) %}
+{% if sniper %}
+| {{ labels.action_points_heading }} | {{ labels.current_price_label }} |
+|---------|------|
+| 🎯 {{ labels.ideal_buy_label }} | {{ clean_sniper(sniper.get('ideal_buy')) }} |
+| 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
+| 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
+| 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
+{% endif %}
+
+{% set position = battle.get('position_strategy', {}) %}
+{% if position %}
+**💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}
+- {{ labels.entry_plan_label }}: {{ position.get('entry_plan', 'N/A') }}
+- {{ labels.risk_control_label }}: {{ position.get('risk_control', 'N/A') }}
+{% endif %}
+{% endif %}
+
+{# ====== 3. 关键价位 ====== #}
+{% set price_data = data_persp.get('price_position', {}) %}
+{% if price_data %}
+### 📍 {{ labels.key_price_heading }}
+
+| {{ labels.price_metrics_label }} | {{ labels.current_price_label }} |
+|---------|------|
+| {{ labels.current_price_label }} | {{ price_data.get('current_price', 'N/A') }} |
+| {{ labels.ma5_label }} | {{ price_data.get('ma5', 'N/A') }} |
+| {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
+| {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
+| {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
+| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
+| {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
+{% endif %}
+
+{# ====== 4. 趋势技术面 ====== #}
+{% set has_trend = data_persp.get('trend_status') or result.technical_analysis or result.ma_analysis or result.pattern_analysis %}
+{% if has_trend %}
+### 📈 {{ labels.trend_technical_heading }}
+
+{% set trend_data = data_persp.get('trend_status', {}) %}
+{% if trend_data %}
+**{{ labels.ma_alignment_label }}**: {{ trend_data.get('ma_alignment', 'N/A') }} | {{ labels.bullish_alignment_label }}: {{ '✅ ' ~ labels.yes_label if trend_data.get('is_bullish') else '❌ ' ~ labels.no_label }} | {{ labels.trend_strength_label }}: {{ trend_data.get('trend_score', 'N/A') }}/100
+{% endif %}
+
+{% if result.technical_analysis %}
+**{{ labels.technical_indicators_label }}**: {{ result.technical_analysis }}
+{% endif %}
+{% if result.ma_analysis %}
+**{{ labels.ma_alignment_label }}**: {{ result.ma_analysis }}
+{% endif %}
+{% if result.pattern_analysis %}
+**K线形态**: {{ result.pattern_analysis }}
+{% endif %}
+{% if result.trend_analysis %}
+**走势形态**: {{ result.trend_analysis }}
+{% endif %}
+{% if result.short_term_outlook %}
+**短期(1-3日)**: {{ result.short_term_outlook }}
+{% endif %}
+{% if result.medium_term_outlook %}
+**中期(1-2周)**: {{ result.medium_term_outlook }}
+{% endif %}
+{% endif %}
+
+{# ====== 5. 基本面与估值 ====== #}
+{% set has_fundamental = result.fundamental_analysis or result.sector_position or result.company_highlights %}
+{% if has_fundamental %}
+### 💼 {{ labels.fundamentals_heading }}
+
+{% if result.fundamental_analysis %}
+**{{ labels.fundamental_analysis_label }}**: {{ result.fundamental_analysis }}
+{% endif %}
+{% if result.sector_position %}
+**{{ labels.sector_position_label }}**: {{ result.sector_position }}
+{% endif %}
+{% if result.company_highlights %}
+**{{ labels.company_highlights_label }}**: {{ result.company_highlights }}
+{% endif %}
+{% if result.key_points %}
+**核心看点**: {{ result.key_points }}
+{% endif %}
+{% endif %}
+
+{# ====== 6. 资金与量价 ====== #}
+{% set vol_data = data_persp.get('volume_analysis', {}) %}
+{% set chip_data = data_persp.get('chip_structure', {}) %}
+{% set chip_unavailable = chip_data and is_chip_structure_unavailable(chip_data) %}
+{% if vol_data or chip_data %}
+### 💰 {{ labels.capital_volume_heading }}
+
+{% if vol_data %}
+**{{ labels.volume_label }}**: {{ labels.volume_ratio_label }} {{ vol_data.get('volume_ratio', 'N/A') }} ({{ vol_data.get('volume_status', '') }}) | {{ labels.turnover_rate_label }} {{ vol_data.get('turnover_rate', 'N/A') }}%
+{% if vol_data.get('volume_meaning') %}
+💡 *{{ vol_data.get('volume_meaning') }}*
+{% endif %}
+{% endif %}
+
+{% if chip_data and not chip_unavailable %}
+**{{ labels.chip_label }}**: {{ chip_data.get('profit_ratio', 'N/A') }} | {{ chip_data.get('avg_cost', 'N/A') }} | {{ chip_data.get('concentration', 'N/A') }} {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }}
+{% elif chip_unavailable %}
+**{{ labels.chip_label }}**: {{ get_chip_unavailable_reason(chip_data, report_language) }}
+{% endif %}
+{% endif %}
+
+{{ market_snapshot(result) }}
+
+{# ====== 7. 新闻公告/催化与风险 ====== #}
 {% if intel %}
-### 📰 {{ labels.info_heading }}
+### 📰 {{ labels.news_events_heading }}
 
 {% if intel.get('sentiment_summary') %}
 **💭 {{ labels.sentiment_summary_label }}**: {{ intel.sentiment_summary }}
@@ -57,167 +217,92 @@
 
 **📢 {{ labels.latest_news_label }}**: {{ intel.latest_news }}
 {% endif %}
+{% if result.news_summary %}
 
+**📰 新闻摘要**: {{ result.news_summary }}
 {% endif %}
+{% if result.market_sentiment %}
 
-### 📌 {{ labels.core_conclusion_heading }}
-
-**{{ e.signal_emoji }} {{ e.signal_text }}** | {{ localize_trend_prediction(result.trend_prediction, report_language) }}
-
-> **{{ labels.one_sentence_label }}**: {{ core.get('one_sentence', result.analysis_summary) }}
-
-⏰ **{{ labels.time_sensitivity_label }}**: {{ core.get('time_sensitivity', labels.default_time_sensitivity) }}
-
-{% set pos_advice = core.get('position_advice', {}) %}
-{% if pos_advice %}
-| {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
-|---------|---------|
-| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
-| 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
+**📊 市场情绪**: {{ result.market_sentiment }}
 {% endif %}
+{% if result.hot_topics %}
 
-{{ market_snapshot(result) }}
-
-{% if data_persp %}
-### 📊 {{ labels.data_perspective_heading }}
-
-{% set trend_data = data_persp.get('trend_status', {}) %}
-{% if trend_data %}
-**{{ labels.ma_alignment_label }}**: {{ trend_data.get('ma_alignment', 'N/A') }} | {{ labels.bullish_alignment_label }}: {{ '✅ ' ~ labels.yes_label if trend_data.get('is_bullish') else '❌ ' ~ labels.no_label }} | {{ labels.trend_strength_label }}: {{ trend_data.get('trend_score', 'N/A') }}/100
-{% endif %}
-
-{% set price_data = data_persp.get('price_position', {}) %}
-{% if price_data %}
-| {{ labels.price_metrics_label }} | {{ labels.current_price_label }} |
-|---------|------|
-| {{ labels.current_price_label }} | {{ price_data.get('current_price', 'N/A') }} |
-| {{ labels.ma5_label }} | {{ price_data.get('ma5', 'N/A') }} |
-| {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
-| {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
-| {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
-| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
-| {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
-{% endif %}
-
-{% set vol_data = data_persp.get('volume_analysis', {}) %}
-{% if vol_data %}
-**{{ labels.volume_label }}**: {{ labels.volume_ratio_label }} {{ vol_data.get('volume_ratio', 'N/A') }} ({{ vol_data.get('volume_status', '') }}) | {{ labels.turnover_rate_label }} {{ vol_data.get('turnover_rate', 'N/A') }}%
-💡 *{{ vol_data.get('volume_meaning', '') }}*
-{% endif %}
-
-{% set chip_data = data_persp.get('chip_structure', {}) %}
-{% set chip_unavailable_reason = get_chip_unavailable_reason(chip_data, report_language) if chip_data and is_chip_structure_unavailable(chip_data) else get_chip_unavailable_reason(data_persp, report_language) %}
-{% if chip_data and not is_chip_structure_unavailable(chip_data) %}
-**{{ labels.chip_label }}**: {{ chip_data.get('profit_ratio', 'N/A') }} | {{ chip_data.get('avg_cost', 'N/A') }} | {{ chip_data.get('concentration', 'N/A') }} {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }}
-{% elif chip_unavailable_reason %}
-**{{ labels.chip_label }}**: {{ chip_unavailable_reason }}
+**🔥 相关热点**: {{ result.hot_topics }}
 {% endif %}
 {% endif %}
 
-{% set phase_decision = dashboard.get('phase_decision') or {} %}
-{% set phase_decision_has_content = phase_decision.get('action_window') %}
-{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('immediate_action') %}
-{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('watch_conditions') %}
-{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('next_check_time') %}
-{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('confidence_reason') %}
-{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('data_limitations') %}
-{% if phase_decision_has_content %}
-### 🛡️ {{ labels.phase_decision_heading }}
+{# ====== 8. 条件检查 ====== #}
+{% set checklist = battle.get('action_checklist', []) %}
+{% if checklist %}
+### ✅ {{ labels.condition_check_heading }}
 
-| {{ labels.action_window_label }} | {{ labels.immediate_action_label }} | {{ labels.next_check_time_label }} |
-|---------|---------|---------|
-| {{ phase_decision.get('action_window') or 'N/A' }} | {{ phase_decision.get('immediate_action') or 'N/A' }} | {{ phase_decision.get('next_check_time') or 'N/A' }} |
+{% for item in checklist %}
+- {{ item }}
+{% endfor %}
+{% endif %}
 
+{# ====== 9. 风险收益 ====== #}
+{% set sniper = battle.get('sniper_points', {}) %}
+{% if sniper.get('take_profit') and sniper.get('stop_loss') %}
+{% set tp_val = clean_sniper(sniper.get('take_profit')) %}
+{% set sl_val = clean_sniper(sniper.get('stop_loss')) %}
+{% set price_val = price_data.get('current_price', '') %}
+{% if tp_val and tp_val != 'N/A' and sl_val and sl_val != 'N/A' and price_val and price_val != 'N/A' %}
+{% set tp_num = tp_val | float %}
+{% set sl_num = sl_val | float %}
+{% set price_num = price_val | float %}
+{% if tp_num and sl_num and price_num %}
+{% set reward = (tp_num - price_num) | abs %}
+{% set risk = (price_num - sl_num) | abs %}
+{% if risk > 0 and reward > 0 %}
+{% set ratio = (reward / risk) | round(1) %}
+### ⚖️ {{ labels.risk_reward_heading }}
+
+| {{ labels.take_profit_label }} | {{ labels.stop_loss_label }} | {{ labels.risk_reward_ratio_label }} |
+|------|------|------|
+| {{ tp_num }} | {{ sl_num }} | {{ ratio }}:1 |
+{% if ratio < 1 %}
+⚠️ {{ labels.risk_reward_unfavorable_label }}
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+
+{# ====== 10. 下一观察点 ====== #}
+{% set has_observation = phase_decision.get('watch_conditions') or phase_decision.get('immediate_action') or phase_decision.get('next_check_time') %}
+{% if has_observation %}
+### 🔭 {{ labels.next_observation_heading }}
+
+{% if phase_decision.get('immediate_action') %}
+**{{ labels.immediate_action_label }}**: {{ phase_decision.get('immediate_action') }}
+{% endif %}
 {% if phase_decision.get('watch_conditions') %}
 **{{ labels.watch_conditions_label }}**:
 {% for condition in phase_decision.get('watch_conditions') %}
 - {{ condition }}
 {% endfor %}
 {% endif %}
+{% if phase_decision.get('next_check_time') %}
+**{{ labels.next_check_time_label }}**: {{ phase_decision.get('next_check_time') }}
+{% endif %}
 {% if phase_decision.get('confidence_reason') %}
 **{{ labels.confidence_reason_label }}**: {{ phase_decision.get('confidence_reason') }}
 {% endif %}
+{% endif %}
+
+{# ====== 11. 数据完整性 ====== #}
+{% set has_data_limits = phase_decision.get('data_limitations') or result.data_sources %}
+{% if has_data_limits %}
+### 📊 {{ labels.data_integrity_heading }}
+
 {% if phase_decision.get('data_limitations') %}
-**{{ labels.data_limitations_label }}**:
 {% for limitation in phase_decision.get('data_limitations') %}
 - {{ limitation }}
 {% endfor %}
 {% endif %}
-
-{% endif %}
-
-{% set signal_attr = dashboard.get('signal_attribution') or {} %}
-{% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
-{% if signal_attribution_has_content(signal_attr) %}
-### 🎯 {{ labels.signal_attribution_heading }}
-
-{% if signal_attr_weights %}
-**{{ labels.attribution_weights_label }}**:
-{% for key, value in signal_attr_weights %}
-{% if key == 'technical_indicators' %}- 📈 {{ labels.technical_indicators_label }}: {{ value }}%{% endif %}
-{% if key == 'news_sentiment' %}- 📰 {{ labels.news_sentiment_label }}: {{ value }}%{% endif %}
-{% if key == 'fundamentals' %}- 💼 {{ labels.fundamentals_label }}: {{ value }}%{% endif %}
-{% if key == 'market_conditions' %}- 🌐 {{ labels.market_conditions_label }}: {{ value }}%{% endif %}
-{% endfor %}
-{% endif %}
-
-{% if signal_attr.get('strongest_bullish_signal') %}
-**🟢 {{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
-{% endif %}
-{% if signal_attr.get('strongest_bearish_signal') %}
-**🔴 {{ labels.strongest_bearish_signal_label }}**: {{ signal_attr.get('strongest_bearish_signal') }}
-{% endif %}
-
-{% endif %}
-
-{% set strategy_synthesis = normalize_strategy_synthesis_payload(dashboard.get('strategy_synthesis')) %}
-{% if strategy_synthesis %}
-### 🧩 {{ labels.strategy_synthesis_heading }}
-
-{% set strategy_confidence = strategy_synthesis.get('confidence') %}
-- {{ labels.strategy_final_signal_label }}: {{ localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language) }} | {{ labels.strategy_consensus_level_label }}: {{ localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language) }} | {{ labels.strategy_conflict_label }}: {{ localize_conflict_severity(strategy_synthesis.get('conflict_severity', 'none'), report_language) }} ({{ strategy_synthesis.get('conflict_count', 0) }}) | {{ labels.strategy_confidence_label }}: {{ '%.0f%%' | format(strategy_confidence * 100) if strategy_confidence is number else 'N/A' }}
-{% if localize_strategy_synthesis_summary(strategy_synthesis, report_language) %}- {{ labels.strategy_summary_label }}: {{ localize_strategy_synthesis_summary(strategy_synthesis, report_language) }}{% endif %}
-{% set supporting_skills = strategy_synthesis.get('supporting_skills') or [] %}
-{% set opposing_skills = strategy_synthesis.get('opposing_skills') or [] %}
-- {{ labels.strategy_supporting_skills_label }}: {% if supporting_skills %}{% for item in supporting_skills %}{{ localize_strategy_skill(item.get('skill_id'), report_language) }}{% if item.get('signal') %}/{{ localize_strategy_signal(item.get('signal'), report_language) }}{% endif %}{% if item.get('confidence') is number %}/{{ '%.0f%%' | format(item.get('confidence') * 100) }}{% endif %}{{ '、' if not loop.last else '' }}{% endfor %}{% else %}{{ labels.none_label }}{% endif %}
-- {{ labels.strategy_opposing_skills_label }}: {% if opposing_skills %}{% for item in opposing_skills %}{{ localize_strategy_skill(item.get('skill_id'), report_language) }}{% if item.get('signal') %}/{{ localize_strategy_signal(item.get('signal'), report_language) }}{% endif %}{% if item.get('confidence') is number %}/{{ '%.0f%%' | format(item.get('confidence') * 100) }}{% endif %}{{ '、' if not loop.last else '' }}{% endfor %}{% else %}{{ labels.none_label }}{% endif %}
-{% set invalid_opinion_count = strategy_invalid_opinion_count(strategy_synthesis) %}
-{% if invalid_opinion_count and invalid_opinion_count > 0 %}- {{ labels.strategy_invalid_opinions_label.format(count=invalid_opinion_count) }}
-{% endif %}
-{% for conflict in (strategy_synthesis.get('conflicts') or [])[:3] %}
-{% if conflict.get('conflict_type') %}- {{ localize_conflict_severity(conflict.get('severity', 'medium'), report_language) }}: {{ localize_strategy_conflict_description(conflict.get('conflict_type'), report_language) }}{% if conflict.get('participants') %}（{% for participant in conflict.get('participants') %}{{ localize_strategy_skill(participant, report_language) }}{{ '、' if not loop.last else '' }}{% endfor %}）{% endif %}{% endif %}
-{% endfor %}
-
-{% endif %}
-
-{% if battle %}
-### 🎯 {{ labels.battle_plan_heading }}
-
-{% set sniper = battle.get('sniper_points', {}) %}
-{% if sniper %}
-**📍 {{ labels.action_points_heading }}**
-
-| {{ labels.action_points_heading }} | {{ labels.current_price_label }} |
-|---------|------|
-| 🎯 {{ labels.ideal_buy_label }} | {{ clean_sniper(sniper.get('ideal_buy')) }} |
-| 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
-| 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
-| 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
-{% endif %}
-
-{% set position = battle.get('position_strategy', {}) %}
-{% if position %}
-**💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}
-- {{ labels.entry_plan_label }}: {{ position.get('entry_plan', 'N/A') }}
-- {{ labels.risk_control_label }}: {{ position.get('risk_control', 'N/A') }}
-{% endif %}
-
-{% set checklist = battle.get('action_checklist', []) %}
-{% if checklist %}
-**✅ {{ labels.checklist_heading }}**
-{% for item in checklist %}
-- {{ item }}
-{% endfor %}
+{% if result.data_sources %}
+**{{ labels.source_label }}**: {{ result.data_sources }}
 {% endif %}
 {% endif %}
 

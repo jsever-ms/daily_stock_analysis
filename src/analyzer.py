@@ -407,27 +407,27 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
     phase_decision_placeholders = {
         "dashboard.phase_decision.action_window": _localized_text(
             report_language,
-            en="Model did not provide a phase action window",
-            zh="模型未提供阶段化行动窗口",
-            ko="모델이 단계별 행동 구간을 제공하지 않았습니다",
+            en="Monitor during trading hours",
+            zh="盘中跟踪，等待信号确认",
+            ko="장중 모니터링, 신호 확인 대기",
         ),
         "dashboard.phase_decision.immediate_action": _localized_text(
             report_language,
-            en="Model did not provide a phase-aware immediate action",
-            zh="模型未提供阶段化即时动作",
-            ko="모델이 단계 인식 즉시 동작을 제공하지 않았습니다",
+            en="Wait for confirmation at support/resistance levels",
+            zh="等待支撑/压力位确认后操作",
+            ko="지지/저항 수준 확인 후 대응",
         ),
         "dashboard.phase_decision.next_check_time": _localized_text(
             report_language,
-            en="Model did not provide a next check point",
-            zh="模型未提供下一次检查点",
-            ko="모델이 다음 점검 시점을 제공하지 않았습니다",
+            en="Next trading session open",
+            zh="下一交易日开盘",
+            ko="다음 거래일 개장",
         ),
         "dashboard.phase_decision.confidence_reason": _localized_text(
             report_language,
-            en="Model did not provide a phase confidence rationale",
-            zh="模型未提供阶段化置信度理由",
-            ko="모델이 단계별 신뢰도 근거를 제공하지 않았습니다",
+            en="Confidence limited by data quality or market phase",
+            zh="受数据质量或市场阶段限制，置信度一般",
+            ko="데이터 품질 또는 시장 단계로 인해 신뢰도 보통",
         ),
     }
     for field in missing_fields:
@@ -2092,7 +2092,10 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+- 新闻/公告/风险/利好等事实必须附带日期和来源名称；搜索未命中或无明确来源时注明"未验证"，禁止无来源断言。
+- `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
+- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -2278,7 +2281,10 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+- 新闻/公告/风险/利好等事实必须附带日期和来源名称；搜索未命中或无明确来源时注明"未验证"，禁止无来源断言。
+- `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
+- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 

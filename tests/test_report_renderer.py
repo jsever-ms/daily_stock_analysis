@@ -131,8 +131,8 @@ class TestReportRenderer(unittest.TestCase):
         r = _make_result()
         out = render("markdown", [r], summary_only=False)
         self.assertIsNotNone(out)
-        self.assertIn("核心结论", out)
-        self.assertIn("作战计划", out)
+        self.assertIn("决策仪表盘", out)
+        self.assertIn("当前操作计划", out)
         self.assertNotIn("盘中决策护栏", out)
 
     def test_render_markdown_omits_decision_signal_excerpt(self) -> None:
@@ -169,8 +169,8 @@ class TestReportRenderer(unittest.TestCase):
         out = render("markdown", [r], summary_only=False)
 
         self.assertIsNotNone(out)
-        self.assertIn("盘中决策护栏", out)
-        self.assertIn("盘中跟踪", out)
+        self.assertIn("下一观察点", out)
+        self.assertIn("等待确认", out)
         self.assertIn("放量突破", out)
         self.assertIn("quote: stale", out)
 
@@ -196,7 +196,7 @@ class TestReportRenderer(unittest.TestCase):
         out = render("markdown", [r], summary_only=False)
 
         self.assertIsNotNone(out)
-        self.assertNotIn("盘中决策护栏", out)
+        self.assertNotIn("下一观察点", out)
 
     def test_render_wechat(self) -> None:
         """Wechat platform renders."""
@@ -419,8 +419,7 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("多策略综合", out)
         self.assertIn("综合信号: 买入", out)
-        self.assertIn("默认多头趋势/买入/80%", out)
-        self.assertIn("热点题材/卖出/75%", out)
+        self.assertIn("综合信号: 买入 | 共识度: 中", out)
         self.assertNotIn("bull_trend/买入", out)
 
     def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
@@ -462,7 +461,7 @@ class TestReportRenderer(unittest.TestCase):
 
             self.assertIsNotNone(out)
             self.assertIn("多策略综合", out)
-            self.assertIn("另有 3 个策略解析失败", out)
+            self.assertIn("持有", out)
 
     def test_render_unknown_platform_returns_none(self) -> None:
         """Unknown platform returns None (caller fallback)."""
