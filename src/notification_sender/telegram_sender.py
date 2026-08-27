@@ -226,6 +226,51 @@ class TelegramSender:
             logger.debug(traceback.format_exc())
             return False
 
+    def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
+        """Edit a previously sent Telegram message via ``editMessageText``.
+
+        Failures are logged but not propagated — the caller should continue
+        the analysis regardless of UI progress display status.
+        """
+        bot_token = self._telegram_config.get("bot_token")
+        if not bot_token:
+            logger.warning("[TelegramSender] edit_message: bot_token not configured")
+            return False
+        try:
+            api_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+            payload = {
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            resp = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
+            if resp.status_code == 200:
+                return True
+            # 400 "message is not modified" is harmless — do not log as error
+            if resp.status_code == 400 and "message is not modified" in resp.text.lower():
+                return True
+            logger.warning(
+                "[TelegramSender] edit_message failed: HTTP %s (chat=%s, msg=%s) — %s",
+                resp.status_code, chat_id, message_id, resp.text[:200],
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "[TelegramSender] edit_message exception (chat=%s, msg=%s): %s — "
+                "progress display failure does not affect analysis",
+                chat_id, message_id, exc,
+            )
+            return False
+
     def _send_telegram_message(
         self,
         api_url: str,

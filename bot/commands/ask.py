@@ -14,13 +14,22 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from bot.commands.base import BotCommand, CATEGORY_AI
 from bot.models import BotMessage, BotResponse
 from data_provider.base import canonical_stock_code
 from src.config import get_config
 from src.storage import get_db
+
+# ── 进度回调类型 ────────────────────────────────────────────────
+# 参数: (pct, completed_stages, current_stage, failed_stages, elapsed_seconds, final_text)
+# completed_stages / failed_stages 为已完成的阶段名称列表
+# final_text: 若提供，表示分析结束，用此文本替换进度消息
+_ProgressCallback = Optional[Callable[[int, List[str], str, List[str], float, Optional[str]], None]]
+
+# 正在分析中的股票代码集合（用于 dedup）
+_analyzing_codes: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +100,39 @@ class AskCommand(BotCommand):
     @property
     def menu_label(self) -> str:
         return "🤖 AI 智能问股"
+
+    @staticmethod
+    def _build_progress_text(
+        stock_label: str,
+        pct: int,
+        completed: List[str],
+        current: str,
+        failed: List[str],
+        elapsed: float,
+    ) -> str:
+        """Build a progress message for Telegram.
+
+        Args:
+            stock_label: e.g. "首都在线（300846）"
+            pct: 0-100 progress percentage
+            completed: completed stage names (e.g. ["行情数据", "技术分析"])
+            current: current stage name (e.g. "AI 综合判断")
+            failed: failed stage names (e.g. ["情报搜索"])
+            elapsed: elapsed seconds so far
+        """
+        bar_len = 10
+        filled = min(pct * bar_len // 100, bar_len)
+        bar = "█" * filled + "░" * (bar_len - filled)
+
+        parts = [f"🔄 正在分析 {stock_label} {bar} {pct}%"]
+        for name in completed:
+            parts.append(f"✅ {name}")
+        for name in failed:
+            parts.append(f"⚠️ {name} 不可用，已跳过")
+        if current:
+            parts.append(f"🔄 {current}")
+        parts.append(f"已用时：{elapsed:.0f}秒")
+        return " | ".join(parts)
 
     def _merge_code_args(self, args: List[str]) -> tuple[str, List[str]]:
         """Merge stock code arguments separated by commas or explicit ``vs`` markers."""
@@ -279,7 +321,65 @@ class AskCommand(BotCommand):
         )
 
         if len(codes) == 1:
-            return self._analyze_single(config, message, codes[0], skill_id, skill_text, detail_mode)
+            code = codes[0]
+            # ── 单股 dedup ──
+            if code in _analyzing_codes:
+                logger.info("[AskCommand] Dedup: %s is already being analyzed, skipping", code)
+                return BotResponse.text_response(f"⏳ {code} 正在分析中，请等待当前任务完成")
+
+            # ── 构建进度回调（仅 Telegram 平台生效） ──
+            progress_cb: _ProgressCallback = None
+            if message.platform == "telegram":
+                try:
+                    import requests as _requests
+                    from src.notification_sender.telegram_sender import TelegramSender
+                    sender = TelegramSender(config)
+                    bot_token = getattr(config, "telegram_bot_token", "")
+                    stock_label = code
+
+                    # 先发一条初始进度消息，拿到 message_id
+                    init_text = self._build_progress_text(
+                        stock_label, 0, [], "任务已接收", [], 0.0,
+                    )
+                    send_resp = _requests.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={
+                            "chat_id": message.chat_id,
+                            "text": init_text,
+                            "disable_web_page_preview": True,
+                        },
+                        timeout=10,
+                    )
+                    send_data = send_resp.json()
+                    if send_data.get("ok"):
+                        sent_message_id = str(send_data["result"]["message_id"])
+                        _chat_id = message.chat_id
+
+                        def _make_progress_cb(_sid, _cid, _label):
+                            def _cb(pct: int, completed: List[str], current: str, failed: List[str], elapsed: float, final_text: Optional[str] = None):
+                                try:
+                                    if final_text is not None:
+                                        sender.edit_message(_cid, _sid, final_text, timeout_seconds=10)
+                                    else:
+                                        text = AskCommand._build_progress_text(_label, pct, completed, current, failed, elapsed)
+                                        sender.edit_message(_cid, _sid, text, timeout_seconds=10)
+                                except Exception:
+                                    logger.warning("[AskCommand] Progress edit failed (non-fatal)", exc_info=True)
+                            return _cb
+
+                        progress_cb = _make_progress_cb(sent_message_id, _chat_id, stock_label)
+                except Exception as exc:
+                    logger.warning("[AskCommand] Failed to set up progress (non-fatal): %s", exc)
+
+            # ── 注册分析锁 ──
+            _analyzing_codes.add(code)
+            try:
+                return self._analyze_single(
+                    config, message, code, skill_id, skill_text,
+                    detail_mode=detail_mode, progress_cb=progress_cb,
+                )
+            finally:
+                _analyzing_codes.discard(code)
 
         return self._analyze_multi(config, message, codes, skill_id, skill_text)
 
@@ -291,23 +391,31 @@ class AskCommand(BotCommand):
         skill_id: str,
         skill_text: str,
         detail_mode: bool = False,
+        progress_cb: _ProgressCallback = None,
     ) -> BotResponse:
         """Analyze a single stock.
 
         Args:
             detail_mode: 若为 True，执行完整 Agent 四阶段（含 Step4 完整报告）；
                 否则使用固定 Fast Pipeline — 并行数据采集 + 单次 LLM 生成五段式简报。
+            progress_cb: 进度回调函数，用于实时更新进度消息。
         """
         try:
             if detail_mode:
                 return self._analyze_single_agent(config, message, code, skill_id, skill_text)
 
             # 默认快速问股：固定 Fast Pipeline，禁止多轮 Agent 循环
-            return self._fast_pipeline_analyze(config, code, skill_id, skill_text)
+            return self._fast_pipeline_analyze(config, code, skill_id, skill_text, progress_cb=progress_cb)
 
         except Exception as exc:
             logger.error("Ask command failed: %s", exc)
             logger.exception("Ask error details:")
+            if progress_cb:
+                try:
+                    progress_cb(0, [], "", [], 0.0,
+                                final_text=f"❌ 分析失败｜异常：{type(exc).__name__}｜{exc}")
+                except Exception:
+                    pass
             return BotResponse.text_response(f"⚠️ 问股执行出错: {str(exc)}")
 
     def _analyze_single_agent(
@@ -356,6 +464,8 @@ class AskCommand(BotCommand):
         code: str,
         skill_id: str,
         skill_text: str,
+        *,
+        progress_cb: _ProgressCallback = None,
     ) -> BotResponse:
         """固定 Fast Pipeline：并行数据采集 + 单次 LLM 生成五段式简报。
 
@@ -365,8 +475,24 @@ class AskCommand(BotCommand):
 
         最终 LLM 调用复用项目现有 LLMToolAdapter.call_text()，走已配置的
         LITELLM_MODEL + LLM_CHANNELS 通道路由，不自行创建 litellm client。
+
+        Args:
+            progress_cb: 可选进度回调，用于实时更新 Telegram 进度消息。
         """
         t_start = time.monotonic()
+
+        # ── 安全包装进度回调：回调失败不阻塞分析 ──
+        def _safe_progress_cb(*args, **kwargs):
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(*args, **kwargs)
+            except Exception:
+                logger.warning(
+                    "[AskCommand] progress callback failed (non-fatal) — "
+                    "analysis continues regardless",
+                    exc_info=True,
+                )
 
         # ── Phase 1: 并行数据获取（行情 + 历史K线） + 本地技术计算 ──
         # 策略：先并行获取 quote 和 history（各自独立超时，失败不阻塞）；
@@ -414,6 +540,19 @@ class AskCommand(BotCommand):
             data_results["quote"] = quote_result
         if history_result is not None:
             data_results["history"] = history_result
+
+        # 进度更新：行情数据阶段完成
+        completed_stages = []
+        failed_stages = []
+        if quote_result is not None:
+            completed_stages.append("行情数据")
+        else:
+            failed_stages.append("行情数据")
+        if history_result is not None:
+            completed_stages.append("历史数据")
+        else:
+            failed_stages.append("历史数据")
+        _safe_progress_cb(30, completed_stages, "技术分析", failed_stages, time.monotonic() - t_start)
 
         # Step 2: 本地技术分析（复用已获取的 history 数据，不重复网络请求）
         history_data = history_result if history_result is not None else None
@@ -498,6 +637,13 @@ class AskCommand(BotCommand):
 
         t_data_tech = time.monotonic() - t_data_start
 
+        # 进度更新：技术分析阶段完成
+        if data_results.get("trend"):
+            completed_stages.append("技术分析")
+        else:
+            failed_stages.append("技术分析")
+        _safe_progress_cb(50, completed_stages, "情报搜索", failed_stages, time.monotonic() - t_start)
+
         # 工具诊断日志（一行输出便于问题定位）
         diag_line = " | ".join(tool_timings.values()) if tool_timings else "no tools completed"
         logger.info("[FastPipeline] Tool diagnostics for %s: %s", code, diag_line)
@@ -521,8 +667,17 @@ class AskCommand(BotCommand):
 
         t_intel = time.monotonic() - t_intel_start
 
+        # 进度更新：情报检索阶段完成
+        if news_data is not None:
+            completed_stages.append("情报搜索")
+        else:
+            failed_stages.append("情报搜索")
+        _safe_progress_cb(70, completed_stages, "AI 综合判断", failed_stages, time.monotonic() - t_start)
+
         # ── Phase 3: 单次 LLM 调用生成五段式简报（复用项目 LLMToolAdapter） ──
         t_llm_start = time.monotonic()
+        # 进度更新：进入 AI 分析阶段（保持 85% 直到完成）
+        _safe_progress_cb(85, completed_stages, "AI 综合判断", failed_stages, time.monotonic() - t_start)
 
         # 提取结构化数据
         quote = data_results.get("quote", {}) or {}
@@ -672,6 +827,23 @@ class AskCommand(BotCommand):
             f" | AI总结 {t_llm:.1f}s"
             f" | 总耗时 {total_duration:.1f}s"
         )
+
+        # 最终进度更新
+        if progress_cb:
+            if llm_result is not None:
+                completion_text = (
+                    f"✅ 分析完成｜耗时 {total_duration:.1f}秒"
+                )
+            else:
+                # 找出失败阶段
+                fail_phase = "数据获取"
+                if data_errors:
+                    fail_phase = "、".join(data_errors.keys())
+                completion_text = (
+                    f"❌ 分析失败｜失败阶段：{fail_phase}｜耗时 {total_duration:.1f}秒"
+                )
+            _safe_progress_cb(100, completed_stages + (["AI 综合判断"] if llm_result else []),
+                            "", failed_stages, total_duration, final_text=completion_text)
 
         if llm_result is not None:
             return BotResponse.markdown_response(llm_result + "\n\n" + timing_line)
