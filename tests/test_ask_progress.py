@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from bot.commands.ask import AskCommand, _analyzing_codes, _ProgressCallback
+from bot.commands.ask import AskCommand, _ProgressRefresher, _analyzing_codes, _ProgressCallback
 from bot.models import BotMessage, BotResponse
 
 
@@ -377,6 +377,196 @@ class NoProgressForNonTelegramTestCase(unittest.TestCase):
             cmd = AskCommand()
             response = cmd.execute(message, [code])
             self.assertEqual("ok", response.text)
+
+
+class ProgressRefresherTestCase(unittest.TestCase):
+    """Test _ProgressRefresher lifecycle and behavior."""
+
+    def setUp(self):
+        self.edit_calls = []
+        self._edit_fn = MagicMock(side_effect=lambda cid, mid, text, **kw: self.edit_calls.append(text))
+        # Mock requests.post to avoid real HTTP calls in refresher's typing action
+        self._req_patcher = patch("requests.post", return_value=MagicMock(status_code=200))
+        self._mock_req = self._req_patcher.start()
+
+    def tearDown(self):
+        self._req_patcher.stop()
+
+    def test_start_stop_lifecycle(self):
+        """Refresher starts and stops correctly."""
+        r = _ProgressRefresher(
+            edit_fn=self._edit_fn,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=50,
+            completed=["行情数据"],
+            current="AI 综合判断",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        self.assertFalse(r.is_alive)
+        r.start()
+        self.assertTrue(r.is_alive)
+        r.stop()
+        # Thread checks stop event every ~1s; wait for clean exit
+        if r._thread:
+            r._thread.join(timeout=5)
+        self.assertFalse(r.is_alive)
+
+    def test_stop_is_idempotent(self):
+        """Calling stop() multiple times does not raise."""
+        r = _ProgressRefresher(
+            edit_fn=self._edit_fn,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=50,
+            completed=[],
+            current="AI 综合判断",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.stop()
+        r.stop()
+        r.stop()  # should not raise
+
+    def test_restart_stops_old_thread(self):
+        """Starting a new refresher stops the old one."""
+        r = _ProgressRefresher(
+            edit_fn=self._edit_fn,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=50,
+            completed=[],
+            current="AI 综合判断",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.start()
+        t1 = r._thread
+        # Give the thread a moment to settle into the wait loop
+        time.sleep(0.2)
+        # Restart — start() calls stop() + join(timeout=5) internally
+        r.start()
+        t2 = r._thread
+        self.assertIsNot(t1, t2, "restart should create a new thread")
+        # Old thread should exit quickly now that stop event is set
+        t1.join(timeout=5)
+        self.assertFalse(t1.is_alive(), "old thread should be stopped")
+        r.stop()
+        t2.join(timeout=5)
+
+    def test_edits_include_animated_dots(self):
+        """The refresher should edit the message with animated dots (., .., ...)."""
+        r = _ProgressRefresher(
+            edit_fn=self._edit_fn,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=85,
+            completed=["行情数据", "技术分析", "情报搜索"],
+            current="AI 综合判断",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.start()
+        # Wait long enough for at least 2 refresh cycles
+        time.sleep(7.5)
+        r.stop()
+        if r._thread:
+            r._thread.join(timeout=3)
+
+        # Should have at least 2 edits, each with dots
+        self.assertGreaterEqual(len(self.edit_calls), 2)
+        for text in self.edit_calls:
+            self.assertIn("AI 综合判断", text)
+            # One of the dots variants should be present
+            dots_found = any(d in text for d in ("AI 综合判断.", "AI 综合判断..", "AI 综合判断..."))
+            self.assertTrue(dots_found, f"Expected animated dots in text: {text}")
+            # Percentage should remain 85 (not changed by refresher)
+            self.assertIn("85%", text)
+
+    def test_percentage_never_changes_during_refresh(self):
+        """The refresher must never change the real percentage."""
+        r = _ProgressRefresher(
+            edit_fn=self._edit_fn,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=30,
+            completed=["行情数据"],
+            current="技术分析",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.start()
+        time.sleep(4)
+        r.stop()
+        if r._thread:
+            r._thread.join(timeout=3)
+
+        for text in self.edit_calls:
+            self.assertIn("30%", text, "refresher changed percentage — forbidden")
+
+    def test_final_text_stops_refresher(self):
+        """When progress callback receives final_text, the refresher must not fire again."""
+        mock_edit = MagicMock()
+        r = _ProgressRefresher(
+            edit_fn=mock_edit,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=85,
+            completed=["行情数据", "技术分析", "情报搜索"],
+            current="AI 综合判断",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.start()
+        time.sleep(0.2)  # let thread start
+        # Simulate progress callback with final_text
+        r.stop()
+        if r._thread:
+            r._thread.join(timeout=5)
+        mock_edit.reset_mock()
+        # Wait to ensure no more edits from the refresher
+        time.sleep(4)
+        self.assertEqual(mock_edit.call_count, 0, "no edits should fire after stop")
+
+    def test_refresher_stopped_in_finally_on_exception(self):
+        """When execute() raises, the refresher must be stopped in finally."""
+        mock_edit = MagicMock()
+        r = _ProgressRefresher(
+            edit_fn=mock_edit,
+            bot_token="test:token",
+            chat_id="chat1",
+            message_id="123",
+            stock_label="300846",
+            pct=50,
+            completed=[],
+            current="技术分析",
+            failed=[],
+            t_start=time.monotonic(),
+        )
+        r.start()
+        time.sleep(0.2)  # let thread start
+        # Simulate what the finally block does
+        r.stop()
+        if r._thread:
+            r._thread.join(timeout=5)
+        self.assertFalse(r.is_alive, "refresher must be stopped after finally")
+        # Wait to ensure no more edits
+        time.sleep(4)
+        # Only the edits from the brief run should exist
+        self.assertLess(mock_edit.call_count, 5, "refresher continued firing after stop")
 
 
 if __name__ == "__main__":

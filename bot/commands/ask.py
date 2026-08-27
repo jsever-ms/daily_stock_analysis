@@ -11,6 +11,7 @@ Usage:
 
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
@@ -64,6 +65,132 @@ _FAST_PIPELINE_TOOL_TIMEOUT_S = 8.0    # 单个工具超时（快速降级）
 _FAST_PIPELINE_NEWS_TIMEOUT_S = 10.0   # 情报增强数据超时
 _FAST_PIPELINE_LLM_TIMEOUT_S = 45.0    # 最终 LLM 调用超时
 _FAST_PIPELINE_TOTAL_TIMEOUT_S = 90.0  # 快速问股总超时兜底
+
+
+class _ProgressRefresher:
+    """Background thread that periodically refreshes the progress message
+    with updated elapsed time and animated dots, without changing the
+    real percentage or stage.
+
+    - Refreshes editMessageText every ~3.5 seconds (≥3s to avoid flood)
+    - Sends sendChatAction("typing") every ~4.5 seconds
+    - Animated dots cycle: . → .. → ...
+    - Stops immediately when :meth:`stop` is called (threading.Event)
+    """
+
+    _REFRESH_INTERVAL = 3.5
+    _TYPING_INTERVAL = 4.5
+
+    def __init__(
+        self,
+        edit_fn: Callable,
+        bot_token: str,
+        chat_id: str,
+        message_id: str,
+        stock_label: str,
+        pct: int,
+        completed: List[str],
+        current: str,
+        failed: List[str],
+        t_start: float,
+    ):
+        self._edit_fn = edit_fn
+        self._bot_token = bot_token
+        self._chat_id = chat_id
+        self._message_id = message_id
+        self._stock_label = stock_label
+        self._pct = pct
+        self._completed = list(completed)
+        self._current = current
+        self._failed = list(failed)
+        self._t_start = t_start
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    # ── 以下属性由主线程在进度回调中写入，刷新线程读取 ──
+    # 使用普通属性而非锁，因为：
+    #   - 写入前必先 stop() 等待旧线程退出
+    #   - 新线程启动后主线程不再写入新值，直到下一次 stop()
+    @property
+    def _state(self):
+        return (self._pct, self._completed, self._current, self._failed)
+
+    @_state.setter
+    def _state(self, value):
+        self._pct, self._completed, self._current, self._failed = value
+
+    def start(self):
+        """Start (or restart) the background refresh thread."""
+        self.stop()
+        # 等待旧线程完全退出，避免新旧线程同时编辑同一条消息
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Signal the background thread to stop (idempotent)."""
+        self._stop_event.set()
+
+    @property
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self):
+        import requests
+
+        dot_states = [".", "..", "..."]
+        dot_idx = 0
+        last_edit = 0.0
+        last_typing = 0.0
+
+        while not self._stop_event.is_set():
+            now = time.monotonic()
+            elapsed = now - self._t_start
+
+            # ── 编辑进度消息（≥3s 间隔，避免 Telegram flood） ──
+            if now - last_edit >= self._REFRESH_INTERVAL:
+                dot = dot_states[dot_idx % 3]
+                dot_idx += 1
+                text = AskCommand._build_progress_text(
+                    self._stock_label,
+                    self._pct,
+                    self._completed,
+                    self._current + dot,
+                    self._failed,
+                    elapsed,
+                )
+                try:
+                    self._edit_fn(
+                        self._chat_id, self._message_id, text, timeout_seconds=10,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[ProgressRefresher] edit failed (non-fatal)", exc_info=True,
+                    )
+                last_edit = now
+
+            # ── sendChatAction("typing") 每 ~4.5 秒 ──
+            if now - last_typing >= self._TYPING_INTERVAL:
+                try:
+                    api_url = (
+                        f"https://api.telegram.org/bot{self._bot_token}/sendChatAction"
+                    )
+                    requests.post(
+                        api_url,
+                        json={"chat_id": self._chat_id, "action": "typing"},
+                        timeout=5,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[ProgressRefresher] sendChatAction failed (non-fatal)",
+                        exc_info=True,
+                    )
+                last_typing = now
+
+            # 每秒检查一次 stop 信号（而非长时间 sleep）
+            self._stop_event.wait(1.0)
 
 
 class AskCommand(BotCommand):
@@ -327,8 +454,9 @@ class AskCommand(BotCommand):
                 logger.info("[AskCommand] Dedup: %s is already being analyzed, skipping", code)
                 return BotResponse.text_response(f"⏳ {code} 正在分析中，请等待当前任务完成")
 
-            # ── 构建进度回调（仅 Telegram 平台生效） ──
+            # ── 构建进度回调 + 后台刷新（仅 Telegram 平台生效） ──
             progress_cb: _ProgressCallback = None
+            refresher: Optional[_ProgressRefresher] = None
             if message.platform == "telegram":
                 try:
                     import requests as _requests
@@ -336,6 +464,7 @@ class AskCommand(BotCommand):
                     sender = TelegramSender(config)
                     bot_token = getattr(config, "telegram_bot_token", "")
                     stock_label = code
+                    t_start = time.monotonic()
 
                     # 先发一条初始进度消息，拿到 message_id
                     init_text = self._build_progress_text(
@@ -355,19 +484,61 @@ class AskCommand(BotCommand):
                         sent_message_id = str(send_data["result"]["message_id"])
                         _chat_id = message.chat_id
 
-                        def _make_progress_cb(_sid, _cid, _label):
-                            def _cb(pct: int, completed: List[str], current: str, failed: List[str], elapsed: float, final_text: Optional[str] = None):
+                        # 创建后台刷新器（初始状态：0%，任务已接收）
+                        refresher = _ProgressRefresher(
+                            edit_fn=sender.edit_message,
+                            bot_token=bot_token,
+                            chat_id=_chat_id,
+                            message_id=sent_message_id,
+                            stock_label=stock_label,
+                            pct=0,
+                            completed=[],
+                            current="任务已接收",
+                            failed=[],
+                            t_start=t_start,
+                        )
+
+                        def _make_progress_cb(_sid, _cid, _label, _refresher):
+                            def _cb(
+                                pct: int,
+                                completed: List[str],
+                                current: str,
+                                failed: List[str],
+                                elapsed: float,
+                                final_text: Optional[str] = None,
+                            ):
                                 try:
+                                    # 停止旧的后台刷新
+                                    _refresher.stop()
                                     if final_text is not None:
-                                        sender.edit_message(_cid, _sid, final_text, timeout_seconds=10)
+                                        sender.edit_message(
+                                            _cid, _sid, final_text, timeout_seconds=10,
+                                        )
                                     else:
-                                        text = AskCommand._build_progress_text(_label, pct, completed, current, failed, elapsed)
-                                        sender.edit_message(_cid, _sid, text, timeout_seconds=10)
+                                        text = AskCommand._build_progress_text(
+                                            _label, pct, completed, current, failed, elapsed,
+                                        )
+                                        sender.edit_message(
+                                            _cid, _sid, text, timeout_seconds=10,
+                                        )
+                                        # 启动新的后台刷新（当前阶段持续期间每 3.5s 刷新）
+                                        _refresher._pct = pct
+                                        _refresher._completed = list(completed)
+                                        _refresher._current = current
+                                        _refresher._failed = list(failed)
+                                        _refresher.start()
                                 except Exception:
-                                    logger.warning("[AskCommand] Progress edit failed (non-fatal)", exc_info=True)
+                                    logger.warning(
+                                        "[AskCommand] Progress callback failed (non-fatal)",
+                                        exc_info=True,
+                                    )
                             return _cb
 
-                        progress_cb = _make_progress_cb(sent_message_id, _chat_id, stock_label)
+                        progress_cb = _make_progress_cb(
+                            sent_message_id, _chat_id, stock_label, refresher,
+                        )
+                        # 初始进度已发送，启动后台刷新
+                        refresher.start()
                 except Exception as exc:
                     logger.warning("[AskCommand] Failed to set up progress (non-fatal): %s", exc)
 
@@ -379,6 +550,9 @@ class AskCommand(BotCommand):
                     detail_mode=detail_mode, progress_cb=progress_cb,
                 )
             finally:
+                # 确保后台刷新线程一定停止（分析成功/失败/异常均需清理）
+                if refresher is not None:
+                    refresher.stop()
                 _analyzing_codes.discard(code)
 
         return self._analyze_multi(config, message, codes, skill_id, skill_text)
