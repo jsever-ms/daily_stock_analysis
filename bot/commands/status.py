@@ -87,8 +87,10 @@ class StatusCommand(BotCommand):
         llm_model_list = getattr(config, "llm_model_list", []) or []
         llm_model = (getattr(config, "litellm_model", "") or "").strip()
         agent_model = (getattr(config, "agent_litellm_model", "") or "").strip()
+        ask_fast_model = (getattr(config, "ask_fast_model", "") or "").strip()
         status["ai_primary_model"] = llm_model
         status["ai_agent_model"] = agent_model or ("继承主模型" if llm_model else "")
+        status["ai_ask_fast_model"] = ask_fast_model or ("继承主模型" if llm_model else "")
         status["ai_channels"] = [
             str(channel.get("name") or "").strip()
             for channel in llm_channels
@@ -265,6 +267,7 @@ class StatusCommand(BotCommand):
             "**🤖 AI 分析服务**",
             f"• 主模型: {status['ai_primary_model'] or '未配置'}",
             f"• Agent 模型: {status['ai_agent_model'] or '未配置'}",
+            f"• 快速问股模型: {status['ai_ask_fast_model'] or '未配置'}",
             f"• LLM 渠道: {', '.join(status['ai_channels']) if status['ai_channels'] else '未配置'}",
             f"• LiteLLM YAML: {icon(status['ai_yaml'])}",
             "• Legacy Key: "

@@ -24,6 +24,32 @@ from src.storage import get_db
 
 logger = logging.getLogger(__name__)
 
+
+class _FastPipelineConfig:
+    """Config wrapper that overrides ``litellm_model`` for Fast Pipeline.
+
+    Preserves all other config attributes so that LLMToolAdapter and
+    route resolution continue to work with the correct channel API keys,
+    fallback models, and provider settings.
+    """
+
+    __slots__ = ('_orig', '_model')
+
+    def __init__(self, original, ask_fast_model: str):
+        object.__setattr__(self, '_orig', original)
+        object.__setattr__(self, '_model', ask_fast_model)
+
+    def __getattr__(self, name):
+        if name == 'litellm_model':
+            return self._model
+        return getattr(self._orig, name)
+
+    def __setattr__(self, name, value):
+        if name in ('_orig', '_model'):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._orig, name, value)
+
 # Fast Pipeline 超时配置
 _FAST_PIPELINE_DATA_TIMEOUT_S = 30.0   # 并行数据获取总超时
 _FAST_PIPELINE_NEWS_TIMEOUT_S = 12.0   # 情报增强数据超时
@@ -480,12 +506,21 @@ class AskCommand(BotCommand):
         )
 
         # 复用项目现有 LLMToolAdapter（走 LITELLM_MODEL + LLM_CHANNELS 通道路由）
+        # ASK_FAST_MODEL 优先用于 Fast Pipeline 最终总结，空则继承 LITELLM_MODEL
         llm_result = None
         llm_error_category = None
         try:
             from src.agent.llm_adapter import LLMToolAdapter
 
-            adapter = LLMToolAdapter(config)
+            fast_model = getattr(config, "ask_fast_model", "") or ""
+            pipeline_config = _FastPipelineConfig(config, fast_model) if fast_model else config
+            if fast_model:
+                logger.info(
+                    "[FastPipeline] Using ASK_FAST_MODEL=%s for %s",
+                    fast_model, code,
+                )
+
+            adapter = LLMToolAdapter(pipeline_config)
             llm_response = adapter.call_text(
                 messages=[{"role": "user", "content": llm_prompt}],
                 temperature=0.3,
