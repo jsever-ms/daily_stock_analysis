@@ -2091,9 +2091,11 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- `dashboard.signal_attribution` 中不要输出百分比权重，只输出最强看多信号（`strongest_bullish_signal`）和最强看空信号（`strongest_bearish_signal`）的名称。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
-- 新闻/公告/风险/利好等事实必须附带日期和来源名称；搜索未命中或无明确来源时注明"未验证"，禁止无来源断言。
+- 新闻/公告/处罚/停牌/减持/业绩/研报等重要事实必须附带日期和来源名称；高影响事件无可靠来源时不得作为确定事实，应标记"待验证"。禁止无来源断言。
+- 严格区分"筹码分布数据"（获利比例/平均成本/集中度）和"股东户数变化"，不得将后者直接等同于筹码集中；`chip_structure` 只反映筹码分布，股东户数变化应放在 `intelligence` 或 `news_summary` 中说明。
+- 下一观察点（`watch_conditions`）必须基于支撑位/压力位/均线等具体价格条件生成可执行检查项，如"突破XX元时买入"或"跌破XX元止损"。
 - `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
 - 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
 
@@ -2280,9 +2282,11 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- `dashboard.signal_attribution` 中不要输出百分比权重，只输出最强看多信号（`strongest_bullish_signal`）和最强看空信号（`strongest_bearish_signal`）的名称。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
-- 新闻/公告/风险/利好等事实必须附带日期和来源名称；搜索未命中或无明确来源时注明"未验证"，禁止无来源断言。
+- 新闻/公告/处罚/停牌/减持/业绩/研报等重要事实必须附带日期和来源名称；高影响事件无可靠来源时不得作为确定事实，应标记"待验证"。禁止无来源断言。
+- 严格区分"筹码分布数据"（获利比例/平均成本/集中度）和"股东户数变化"，不得将后者直接等同于筹码集中；`chip_structure` 只反映筹码分布，股东户数变化应放在 `intelligence` 或 `news_summary` 中说明。
+- 下一观察点（`watch_conditions`）必须基于支撑位/压力位/均线等具体价格条件生成可执行检查项，如"突破XX元时买入"或"跌破XX元止损"。
 - `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
 - 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
 
