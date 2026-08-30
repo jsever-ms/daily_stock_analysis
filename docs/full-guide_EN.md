@@ -848,7 +848,9 @@ Regular analysis and Agent analysis now apply lightweight guardrails before hist
 
 ### Signal Attribution Analysis (Issue #1742)
 
-Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values; valid non-zero values are normalized to 100; all-zero means no effective signal), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values; valid non-zero values are normalized to 100; all-zero means no effective signal), `strongest_bullish_signal`, and `strongest_bearish_signal`, later extended with `dominant_factor`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+
+Display note: report rendering only shows qualitative attribution (`dominant_factor`, `strongest_bullish_signal` as the main bullish factor, `strongest_bearish_signal` as the main bearish factor) and no longer renders percentage weights — the four contribution fields have no deterministic quantitative algorithm behind them and are kept only as JSON compatibility fields for parsing and normalization, not for report display.
 
 Signal attribution analysis is rendered in all report paths:
 - `generate_dashboard_report()` (default notification report)

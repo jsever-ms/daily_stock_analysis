@@ -30,6 +30,7 @@ def _make_result(
     dashboard: dict = None,
     report_language: str = "zh",
     model_used: str = None,
+    trend_prediction: str = "看多",
 ) -> AnalysisResult:
     if dashboard is None:
         dashboard = {
@@ -40,7 +41,7 @@ def _make_result(
     return AnalysisResult(
         code=code,
         name=name,
-        trend_prediction="看多",
+        trend_prediction=trend_prediction,
         sentiment_score=sentiment_score,
         operation_advice=operation_advice,
         analysis_summary=analysis_summary,
@@ -134,6 +135,178 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("决策仪表盘", out)
         self.assertIn("当前操作计划", out)
         self.assertNotIn("盘中决策护栏", out)
+
+    def test_render_markdown_full_fixed_section_order(self) -> None:
+        """详细报告固定九段结构且顺序正确。"""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {"stop_loss": "110"},
+                    "action_checklist": ["必要条件：站稳MA20"],
+                },
+                "data_perspective": {
+                    "trend_status": {"ma_alignment": "多头排列", "is_bullish": True, "trend_score": 70},
+                    "price_position": {"current_price": 120},
+                },
+                "phase_decision": {
+                    "action_window": "盘中跟踪",
+                    "immediate_action": "等待确认",
+                    "watch_conditions": ["放量突破"],
+                    "next_check_time": "14:30",
+                    "data_limitations": ["quote: stale"],
+                },
+            }
+        )
+        r.fundamental_analysis = "基本面稳健"
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        sections = [
+            "决策仪表盘",
+            "当前操作计划",
+            "关键价位与风险收益",
+            "技术与量价",
+            "基本面估值",
+            "新闻/公告/催化与风险",
+            "条件检查",
+            "下一观察点",
+            "数据完整性",
+        ]
+        positions = [out.find(s) for s in sections]
+        self.assertTrue(all(p >= 0 for p in positions), f"缺少段落: {[s for s, p in zip(sections, positions) if p < 0]}")
+        self.assertEqual(positions, sorted(positions), "详细报告段落顺序不符合固定结构")
+
+    def test_render_markdown_bearish_replaces_buy_points_with_observation_zone(self) -> None:
+        """最终动作为卖出时，空仓者不得出现买入点/试仓点，只显示观察区与转强确认条件。"""
+        r = _make_result(
+            sentiment_score=20,
+            operation_advice="减仓",
+            decision_type="sell",
+            trend_prediction="看空",
+            dashboard={
+                "core_conclusion": {"one_sentence": "反弹减仓"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "17.0-17.2 轻仓试探",
+                        "secondary_buy": "16.5 企稳后试仓",
+                        "stop_loss": "16.0",
+                        "take_profit": "18.5",
+                    },
+                },
+                "data_perspective": {"price_position": {"current_price": 17.1}},
+            },
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("当前结论偏空", out)
+        self.assertIn("观察区", out)
+        self.assertIn("转强确认条件", out)
+        self.assertNotIn("理想买入点", out)
+        self.assertNotIn("次优买入点", out)
+        # 偏空时不得出现试仓/买入类表述
+        self.assertNotIn("轻仓试探", out)
+        self.assertNotIn("试仓", out)
+
+    def test_render_markdown_non_bearish_keeps_buy_points(self) -> None:
+        """非偏空结论仍正常显示入场位。"""
+        r = _make_result(
+            sentiment_score=75,
+            decision_type="buy",
+            trend_prediction="看多",
+            dashboard={
+                "core_conclusion": {"one_sentence": "回踩确认后买入"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "110",
+                        "secondary_buy": "108",
+                        "stop_loss": "105",
+                        "take_profit": "125",
+                    },
+                },
+                "data_perspective": {"price_position": {"current_price": 112}},
+            },
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("理想买入点", out)
+        self.assertNotIn("当前结论偏空", out)
+
+    def test_render_markdown_computes_risk_reward_programmatically(self) -> None:
+        """盈亏比由程序计算：目标位 125、止损 105、现价 112 → 13/7 ≈ 1.9:1。"""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "110",
+                        "stop_loss": "105",
+                        "take_profit": "125",
+                    },
+                },
+                "data_perspective": {"price_position": {"current_price": 112}},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("1.9:1", out)
+        self.assertIn("价位说明", out)
+
+    def test_render_markdown_risk_reward_unfavorable_warning(self) -> None:
+        """盈亏比 < 1 时提示当前开仓性价比不足。"""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "stop_loss": "110",
+                        "take_profit": "113",
+                    },
+                },
+                "data_perspective": {"price_position": {"current_price": 112}},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("0.5:1", out)
+        self.assertIn("当前不具备理想开仓性价比", out)
+
+    def test_render_markdown_signal_attribution_qualitative_no_percent(self) -> None:
+        """信号归因为定性表述（主导因素/主要看多/主要看空），不显示百分比。"""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "110"}},
+                "signal_attribution": {
+                    "dominant_factor": "技术面",
+                    "strongest_bullish_signal": "MACD金叉",
+                    "strongest_bearish_signal": "跌破MA20",
+                },
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("主导因素", out)
+        self.assertIn("主要看多因素", out)
+        self.assertIn("主要看空因素", out)
+        self.assertNotIn("归因权重", out)
 
     def test_render_markdown_omits_decision_signal_excerpt(self) -> None:
         """Markdown reports omit the duplicated DecisionSignal excerpt."""

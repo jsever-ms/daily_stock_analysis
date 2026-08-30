@@ -152,12 +152,9 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }},
         "signal_attribution": {{
-            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "strongest_bullish_signal": "最强看多信号名称",
-            "strongest_bearish_signal": "最强看空信号名称"
+            "dominant_factor": "主导因素：技术面/消息面/基本面/资金面（单一说明，不使用百分比）",
+            "strongest_bullish_signal": "主要看多因素（一句话+关键证据）",
+            "strongest_bearish_signal": "主要看空因素（一句话+关键证据）"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -311,12 +308,9 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }},
         "signal_attribution": {{
-            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
-            "strongest_bullish_signal": "最强看多信号名称",
-            "strongest_bearish_signal": "最强看空信号名称"
+            "dominant_factor": "主导因素：技术面/消息面/基本面/资金面（单一说明，不使用百分比）",
+            "strongest_bullish_signal": "主要看多因素（一句话+关键证据）",
+            "strongest_bearish_signal": "主要看空因素（一句话+关键证据）"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",

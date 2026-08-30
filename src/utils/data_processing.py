@@ -5,6 +5,7 @@ Shared data parsing and normalization helpers.
 
 import json
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -16,8 +17,25 @@ SIGNAL_ATTRIBUTION_WEIGHT_KEYS: Tuple[str, ...] = (
     "market_conditions",
 )
 SIGNAL_ATTRIBUTION_SIGNAL_KEYS: Tuple[str, ...] = (
+    "dominant_factor",
     "strongest_bullish_signal",
     "strongest_bearish_signal",
+)
+
+# 偏空结论下需要从展示文本中剔除的入场类话术
+_ENTRY_LANGUAGE_WORDS: Tuple[str, ...] = (
+    "轻仓试探",
+    "轻仓介入",
+    "逢低吸纳",
+    "轻仓",
+    "试仓",
+    "试探",
+    "买入",
+    "建仓",
+    "抄底",
+    "介入",
+    "加仓",
+    "低吸",
 )
 
 
@@ -470,3 +488,28 @@ def signal_attribution_has_content(signal_attr: Any) -> bool:
     if any(value != 0 for _, value in signal_attribution_weight_items(signal_attr)):
         return True
     return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)
+
+
+def contains_entry_language(text: Any) -> bool:
+    """Whether the text contains entry/trial-position language."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return any(word in text for word in _ENTRY_LANGUAGE_WORDS)
+
+
+def sanitize_bearish_entry_text(text: Any) -> str:
+    """Strip entry/trial-position language for bearish-conclusion surfaces.
+
+    Keeps price/reference information intact while removing action wording,
+    so reports stay consistent with the no-entry contract for investors
+    without positions (only observation zones / turn-strong conditions).
+    """
+    if text is None:
+        return ""
+    cleaned = str(text)
+    for word in sorted(_ENTRY_LANGUAGE_WORDS, key=len, reverse=True):
+        cleaned = cleaned.replace(word, "")
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r"[\s，,。;；、]+$", "", cleaned)
+    cleaned = re.sub(r"^[\s，,。;；、]+", "", cleaned)
+    return cleaned

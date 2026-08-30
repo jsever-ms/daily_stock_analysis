@@ -118,15 +118,13 @@ class TestSignalAttributionE2E:
 
         验证：
         1. signal_attribution 存在时，通知中包含"信号归因"段落
-        2. 四个贡献度都正确显示
+        2. 定性归因（主导因素/主要看多/主要看空）正确显示
+        3. 不显示百分比权重（无确定性量化算法支持）
         """
         from src.notification import NotificationService
 
         signal_attr = {
-            "technical_indicators": 35,
-            "news_sentiment": 25,
-            "fundamentals": 20,
-            "market_conditions": 20,
+            "dominant_factor": "技术面",
             "strongest_bullish_signal": "MACD金叉",
             "strongest_bearish_signal": "成交量萎缩",
         }
@@ -139,11 +137,10 @@ class TestSignalAttributionE2E:
 
         # 验证包含信号归因段落
         assert "信号归因" in report or "Signal Attribution" in report, "通知应包含信号归因段落"
-        assert "35%" in report, "通知应显示 technical_indicators=35%"
-        assert "25%" in report, "通知应显示 news_sentiment=25%"
-        assert "20%" in report, "通知应显示 fundamentals=20%"
-        assert "20%" in report, "通知应显示 market_conditions=20%"
+        assert "主导因素" in report, "通知应显示 dominant_factor"
         assert "MACD金叉" in report, "通知应显示 strongest_bullish_signal"
+        assert "成交量萎缩" in report, "通知应显示 strongest_bearish_signal"
+        assert "%" not in report.replace("100%", ""), "通知不应显示归因百分比权重"
 
     # ========== 测试 3: Jinja2 模板渲染 ==========
     def test_jinja2_template_renders_signal_attribution(self):
@@ -151,23 +148,23 @@ class TestSignalAttributionE2E:
         测试 templates/report_markdown.j2 正确渲染 signal_attribution。
 
         验证：
-        1. signal_attribution 存在时，模板输出中包含归因权重
-        2. 四个贡献度都正确显示
+        1. signal_attribution 存在时，模板输出中包含定性归因
+        2. 不显示百分比权重
         """
         signal_attr = {
-            "technical_indicators": 35,
-            "news_sentiment": 25,
-            "fundamentals": 20,
-            "market_conditions": 20,
+            "dominant_factor": "技术面",
             "strongest_bullish_signal": "MACD金叉",
+            "strongest_bearish_signal": "成交量萎缩",
         }
         result = self._make_result(self._make_dashboard_with_signal_attr(signal_attr))
 
         out = render("markdown", [result], summary_only=False, extra_context={"report_language": "zh"})
 
         assert out is not None
-        assert "35%" in out
+        assert "主导因素" in out
         assert "MACD金叉" in out
+        assert "主要看空因素" in out
+        assert "成交量萎缩" in out
 
     def test_parse_dashboard_json_normalizes_nested_dashboard_payload(self):
         """Agent JSON can return a full report object with nested dashboard."""
@@ -198,15 +195,12 @@ class TestSignalAttributionE2E:
         assert "signal_attribution" not in dashboard
 
     def test_partial_signal_attribution_uses_same_display_contract(self):
-        """Partial weights should not render N/A% or None% in any report path."""
+        """Partial attribution should not render N/A% or None% in any report path."""
         from src.notification import NotificationService
         from src.services.history_service import HistoryService
 
         dashboard = self._make_dashboard_with_signal_attr({
-            "technical_indicators": 35,
-            "news_sentiment": None,
-            "fundamentals": None,
-            "market_conditions": 0,
+            "dominant_factor": "技术面",
             "strongest_bullish_signal": "MACD金叉",
         })
         result = self._make_result(dashboard)
@@ -221,11 +215,17 @@ class TestSignalAttributionE2E:
         history_report = HistoryService.__new__(HistoryService)._generate_single_stock_markdown(result, MockRecord())
         template_report = render("markdown", [result], summary_only=False, extra_context={"report_language": "zh"})
 
-        for output in [dashboard_report, single_report, history_report, template_report]:
+        # simple 报告路径不渲染 signal_attribution，仅要求不出现脏数据
+        assert single_report is not None
+        assert "N/A%" not in single_report
+        assert "None%" not in single_report
+
+        # 渲染归因的路径必须显示定性因素，且不出现百分比
+        for output in [dashboard_report, history_report, template_report]:
             assert output is not None
             assert "N/A%" not in output
             assert "None%" not in output
-            assert "35%" in output
+            assert "MACD金叉" in output
 
     def test_all_zero_signal_attribution_is_hidden_without_signals(self):
         """All-zero weights without strongest signals should not render attribution."""
@@ -330,15 +330,12 @@ class TestSignalAttributionE2E:
 
         验证：
         1. signal_attribution 存在时，markdown 中包含"信号归因分析"段落
-        2. 四个贡献度都正确显示
+        2. 定性归因（主导因素/主要看多/主要看空）正确显示，不显示百分比
         """
         from src.services.history_service import HistoryService
 
         signal_attr = {
-            "technical_indicators": 35,
-            "news_sentiment": 25,
-            "fundamentals": 20,
-            "market_conditions": 20,
+            "dominant_factor": "技术面",
             "strongest_bullish_signal": "MACD金叉",
             "strongest_bearish_signal": "成交量萎缩",
         }
@@ -355,8 +352,9 @@ class TestSignalAttributionE2E:
 
         # 验证包含信号归因段落
         assert "信号归因" in markdown or "Signal Attribution" in markdown, "Markdown 应包含信号归因段落"
-        assert "35%" in markdown, "Markdown 应显示 technical_indicators=35%"
+        assert "主导因素" in markdown, "Markdown 应显示 dominant_factor"
         assert "MACD金叉" in markdown, "Markdown 应显示 strongest_bullish_signal"
+        assert "成交量萎缩" in markdown, "Markdown 应显示 strongest_bearish_signal"
 
     # ========== 测试 5: check_content_integrity() optional 契约 ==========
     def test_check_content_integrity_treats_signal_attribution_as_optional(self):

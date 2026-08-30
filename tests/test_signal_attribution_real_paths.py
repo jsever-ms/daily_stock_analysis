@@ -117,7 +117,7 @@ class TestHistoryServiceDisplay:
     """测试 HistoryService._generate_single_stock_markdown 能展示 signal_attribution"""
 
     def test_signal_attribution_in_markdown(self):
-        """验证 markdown 报告包含信号归因段落"""
+        """验证 markdown 报告包含信号归因段落（定性归因，不显示百分比）"""
         from src.services.history_service import HistoryService
 
         result = AnalysisResult(
@@ -128,10 +128,7 @@ class TestHistoryServiceDisplay:
             operation_advice="持有",
             dashboard={
                 "signal_attribution": {
-                    "technical_indicators": 70,
-                    "news_sentiment": 0,
-                    "fundamentals": 15,
-                    "market_conditions": 15,
+                    "dominant_factor": "技术面",
                     "strongest_bullish_signal": "MACD金叉",
                     "strongest_bearish_signal": None,
                 }
@@ -144,7 +141,9 @@ class TestHistoryServiceDisplay:
 
         markdown = HistoryService()._generate_single_stock_markdown(result, MockRecord())
         assert "信号归因" in markdown or "Signal Attribution" in markdown
-        assert "70%" in markdown or "70%" in markdown
+        assert "主导因素" in markdown
+        assert "MACD金叉" in markdown
+        assert "70%" not in markdown
 
     def test_no_signal_attribution_no_section(self):
         """验证没有 signal_attribution 时不显示段落"""

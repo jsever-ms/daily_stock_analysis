@@ -59,15 +59,17 @@ from src.schemas.decision_action import (
     display_action_fields_for_result,
     display_decision_type_for_result,
     display_operation_advice_for_result,
+    is_bearish_final_result,
 )
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
 from src.utils.data_processing import (
     signal_attribution_has_content,
-    signal_attribution_weight_items,
+    sanitize_bearish_entry_text,
     normalize_model_used,
 )
+from src.services.market_metrics import extract_price, risk_reward
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
@@ -1125,66 +1127,6 @@ class NotificationService(
             return []
         return [str(item).strip() for item in value if str(item).strip()]
 
-    @classmethod
-    def _phase_decision_has_content(cls, phase_decision: Dict[str, Any]) -> bool:
-        text_keys = (
-            "action_window",
-            "immediate_action",
-            "next_check_time",
-            "confidence_reason",
-        )
-        if any(str(phase_decision.get(key) or "").strip() for key in text_keys):
-            return True
-        return bool(
-            cls._phase_decision_list(phase_decision.get("watch_conditions"))
-            or cls._phase_decision_list(phase_decision.get("data_limitations"))
-        )
-
-    def _append_phase_decision_block(
-        self,
-        report_lines: List[str],
-        dashboard: Dict[str, Any],
-        labels: Dict[str, str],
-    ) -> None:
-        phase_decision = dashboard.get("phase_decision") if dashboard else None
-        if not isinstance(phase_decision, dict):
-            return
-        if not self._phase_decision_has_content(phase_decision):
-            return
-
-        watch_conditions = self._phase_decision_list(phase_decision.get("watch_conditions"))
-        data_limitations = self._phase_decision_list(phase_decision.get("data_limitations"))
-
-        report_lines.extend([
-            f"### 🛡️ {labels['phase_decision_heading']}",
-            "",
-            f"| {labels['action_window_label']} | {labels['immediate_action_label']} | {labels['next_check_time_label']} |",
-            "|---------|---------|---------|",
-            f"| {phase_decision.get('action_window') or 'N/A'} | "
-            f"{phase_decision.get('immediate_action') or 'N/A'} | "
-            f"{phase_decision.get('next_check_time') or 'N/A'} |",
-            "",
-        ])
-
-        if watch_conditions:
-            report_lines.append(f"**{labels['watch_conditions_label']}**:")
-            for condition in watch_conditions:
-                report_lines.append(f"- {condition}")
-            report_lines.append("")
-
-        confidence_reason = str(phase_decision.get("confidence_reason") or "").strip()
-        if confidence_reason:
-            report_lines.extend([
-                f"**{labels['confidence_reason_label']}**: {confidence_reason}",
-                "",
-            ])
-
-        if data_limitations:
-            report_lines.append(f"**{labels['data_limitations_label']}**:")
-            for limitation in data_limitations:
-                report_lines.append(f"- {limitation}")
-            report_lines.append("")
-
     def _get_display_operation_advice(
         self,
         result: AnalysisResult,
@@ -1341,47 +1283,22 @@ class NotificationService(
                     f"## {signal_emoji} {stock_name} ({result.code})",
                     "",
                 ])
-                # ========== 舆情与基本面概览（放在最前面）==========
+                # ========== 固定九段式结构（详细报告） ==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
-                if intel:
-                    report_lines.extend([
-                        f"### 📰 {labels['info_heading']}",
-                        "",
-                    ])
-                    # 舆情情绪总结
-                    if intel.get('sentiment_summary'):
-                        report_lines.append(f"**💭 {labels['sentiment_summary_label']}**: {intel['sentiment_summary']}")
-                    # 业绩预期
-                    if intel.get('earnings_outlook'):
-                        report_lines.append(f"**📊 {labels['earnings_outlook_label']}**: {intel['earnings_outlook']}")
-                    # 风险警报（醒目显示）
-                    risk_alerts = intel.get('risk_alerts', [])
-                    if risk_alerts:
-                        report_lines.append("")
-                        report_lines.append(f"**🚨 {labels['risk_alerts_label']}**:")
-                        for alert in risk_alerts:
-                            report_lines.append(f"- {alert}")
-                    # 利好催化
-                    catalysts = intel.get('positive_catalysts', [])
-                    if catalysts:
-                        report_lines.append("")
-                        report_lines.append(f"**✨ {labels['positive_catalysts_label']}**:")
-                        for cat in catalysts:
-                            report_lines.append(f"- {cat}")
-                    # 最新消息
-                    if intel.get('latest_news'):
-                        report_lines.append("")
-                        report_lines.append(f"**📢 {labels['latest_news_label']}**: {intel['latest_news']}")
-                    report_lines.append("")
-
-                # ========== 核心结论 ==========
                 core = dashboard.get('core_conclusion', {}) if dashboard else {}
+                battle = dashboard.get('battle_plan', {}) if dashboard else {}
+                data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
+                phase_decision = dashboard.get('phase_decision', {}) if dashboard else {}
+                signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+                bearish_final = is_bearish_final_result(result, report_language=report_language)
+
+                # ====== ① 决策仪表盘 ======
                 one_sentence = core.get('one_sentence', result.analysis_summary)
                 time_sense = core.get('time_sensitivity', labels['default_time_sensitivity'])
                 pos_advice = core.get('position_advice', {})
 
                 report_lines.extend([
-                    f"### 📌 {labels['core_conclusion_heading']}",
+                    f"### 🎯 {labels['dashboard_title']}",
                     "",
                     f"**{signal_emoji} {signal_text}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
                     "",
@@ -1390,28 +1307,140 @@ class NotificationService(
                     f"⏰ **{labels['time_sensitivity_label']}**: {time_sense}",
                     "",
                 ])
-                # 持仓分类建议
+                # 持仓分类建议（偏空结论时空仓建议剔除入场类话术）
                 if pos_advice:
+                    if bearish_final:
+                        no_position_advice = sanitize_bearish_entry_text(pos_advice.get('no_position')) or self._get_display_operation_advice(result, report_language)
+                    else:
+                        no_position_advice = pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))
                     report_lines.extend([
                         f"| {labels['position_status_label']} | {labels['action_advice_label']} |",
                         "|---------|---------|",
-                        f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))} |",
+                        f"| 🆕 **{labels['no_position_label']}** | {no_position_advice} |",
                         f"| 💼 **{labels['has_position_label']}** | {pos_advice.get('has_position', labels['continue_holding'])} |",
                         "",
                     ])
+                # 信号归因（定性归因：主导因素 + 主要看多/看空因素，不展示百分比权重）
+                if signal_attribution_has_content(signal_attr):
+                    report_lines.extend([
+                        f"**{labels['signal_attribution_heading']}**:",
+                        "",
+                    ])
+                    if signal_attr.get('dominant_factor'):
+                        report_lines.append(f"- 🧭 **{labels['dominant_factor_label']}**: {signal_attr['dominant_factor']}")
+                    if signal_attr.get('strongest_bullish_signal'):
+                        report_lines.append(f"- 🟢 **{labels['strongest_bullish_signal_label']}**: {signal_attr['strongest_bullish_signal']}")
+                    if signal_attr.get('strongest_bearish_signal'):
+                        report_lines.append(f"- 🔴 **{labels['strongest_bearish_signal_label']}**: {signal_attr['strongest_bearish_signal']}")
+                    report_lines.append("")
+                # 多策略综合
+                strategy_synthesis = normalize_strategy_synthesis_payload(
+                    dashboard.get('strategy_synthesis') if dashboard else None
+                )
+                _append_strategy_synthesis_block(report_lines, strategy_synthesis, labels, report_language)
+
+                # ====== ② 当前操作计划 ======
+                if battle:
+                    report_lines.extend([
+                        f"### 📋 {labels['operation_plan_heading']}",
+                        "",
+                    ])
+                    # 偏空结论：决策口径全局一致，空仓者只显示观察区/转强确认条件
+                    if bearish_final:
+                        report_lines.extend([
+                            f"⚠️ {labels['bearish_no_entry_note']}",
+                            "",
+                        ])
+                    # 狙击点位
+                    sniper = battle.get('sniper_points', {})
+                    if sniper:
+                        report_lines.extend([
+                            f"**📍 {labels['action_points_heading']}**",
+                            "",
+                            f"| {labels['action_points_heading']} | {labels['current_price_label']} |",
+                            "|---------|------|",
+                        ])
+                        if bearish_final:
+                            report_lines.extend([
+                                f"| 👀 {labels['observation_zone_label']} | {self._clean_sniper_value(sanitize_bearish_entry_text(sniper.get('ideal_buy', 'N/A')))} |",
+                                f"| 🔁 {labels['turn_strong_confirmation_label']} | {self._clean_sniper_value(sanitize_bearish_entry_text(sniper.get('secondary_buy', 'N/A')))} |",
+                            ])
+                        else:
+                            report_lines.extend([
+                                f"| 🎯 {labels['ideal_buy_label']} | {self._clean_sniper_value(sniper.get('ideal_buy', 'N/A'))} |",
+                                f"| 🔵 {labels['secondary_buy_label']} | {self._clean_sniper_value(sniper.get('secondary_buy', 'N/A'))} |",
+                            ])
+                        report_lines.extend([
+                            f"| 🛑 {labels['stop_loss_label']} | {self._clean_sniper_value(sniper.get('stop_loss', 'N/A'))} |",
+                            f"| 🎊 {labels['take_profit_label']} | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
+                            "",
+                        ])
+                    # 仓位策略（偏空结论时入场计划剔除入场类话术）
+                    position = battle.get('position_strategy', {})
+                    if position:
+                        entry_plan = position.get('entry_plan', 'N/A')
+                        if bearish_final:
+                            entry_plan = sanitize_bearish_entry_text(entry_plan) or labels['bearish_no_entry_note']
+                        report_lines.extend([
+                            f"**💰 {labels['suggested_position_label']}**: {position.get('suggested_position', 'N/A')}",
+                            f"- {labels['entry_plan_label']}: {entry_plan}",
+                            f"- {labels['risk_control_label']}: {position.get('risk_control', 'N/A')}",
+                            "",
+                        ])
+
+                # ====== ③ 关键价位与风险收益 ======
+                price_data = data_persp.get('price_position', {}) if data_persp else {}
+                sniper = battle.get('sniper_points', {}) if battle else {}
+                if price_data or (sniper.get('take_profit') and sniper.get('stop_loss')):
+                    report_lines.extend([
+                        f"### 📍 {labels['key_price_and_risk_reward_heading']}",
+                        "",
+                        f"ℹ️ {labels['price_level_distinction_note']}",
+                        "",
+                    ])
+                    if price_data:
+                        bias_status = price_data.get('bias_status', 'N/A')
+                        report_lines.extend([
+                            f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
+                            "|---------|------|",
+                            f"| {labels['current_price_label']} | {price_data.get('current_price', 'N/A')} |",
+                            f"| {labels['ma5_label']} | {price_data.get('ma5', 'N/A')} |",
+                            f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
+                            f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
+                            f"| {labels['bias_ma5_label']} | {price_data.get('bias_ma5', 'N/A')}% {bias_status} |",
+                            f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
+                            f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
+                            "",
+                        ])
+                    # 风险收益比（程序计算，不由 LLM 心算）
+                    sl_price = extract_price(sniper.get('stop_loss'))
+                    tp_price = extract_price(sniper.get('take_profit'))
+                    cur_price = extract_price(price_data.get('current_price'))
+                    rr = risk_reward(cur_price, sl_price, tp_price) if None not in (cur_price, sl_price, tp_price) else None
+                    if rr:
+                        ratio_val = rr.get('ratio')
+                        ratio_text = f"{ratio_val:.1f}:1" if ratio_val is not None else "N/A"
+                        report_lines.extend([
+                            f"| {labels['take_profit_label']} | {labels['stop_loss_label']} | {labels['risk_reward_ratio_label']} |",
+                            "|------|------|------|",
+                            f"| {rr['resistance']} | {rr['support']} | {ratio_text} |",
+                            "",
+                        ])
+                        if ratio_val is not None and ratio_val < 1:
+                            report_lines.extend([
+                                f"⚠️ {labels['risk_reward_unfavorable_label']}",
+                                "",
+                            ])
 
                 self._append_market_snapshot(report_lines, result)
 
-                # ========== 数据透视 ==========
-                data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
-                if data_persp:
-                    trend_data = data_persp.get('trend_status', {})
-                    price_data = data_persp.get('price_position', {})
-                    vol_data = data_persp.get('volume_analysis', {})
-                    chip_data = data_persp.get('chip_structure', {})
-
+                # ====== ④ 技术与量价 ======
+                trend_data = data_persp.get('trend_status', {}) if data_persp else {}
+                vol_data = data_persp.get('volume_analysis', {}) if data_persp else {}
+                chip_data = data_persp.get('chip_structure', {}) if data_persp else {}
+                if trend_data or vol_data or chip_data or result.technical_analysis or result.ma_analysis or result.pattern_analysis:
                     report_lines.extend([
-                        f"### 📊 {labels['data_perspective_heading']}",
+                        f"### 📈 {labels['trend_technical_heading']}",
                         "",
                     ])
                     # 趋势状态
@@ -1427,21 +1456,20 @@ class NotificationService(
                             f"{labels['trend_strength_label']}: {trend_data.get('trend_score', 'N/A')}/100",
                             "",
                         ])
-                    # 价格位置
-                    if price_data:
-                        bias_status = price_data.get('bias_status', 'N/A')
-                        report_lines.extend([
-                            f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
-                            "|---------|------|",
-                            f"| {labels['current_price_label']} | {price_data.get('current_price', 'N/A')} |",
-                            f"| {labels['ma5_label']} | {price_data.get('ma5', 'N/A')} |",
-                            f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
-                            f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
-                            f"| {labels['bias_ma5_label']} | {price_data.get('bias_ma5', 'N/A')}% {bias_status} |",
-                            f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
-                            f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
-                            "",
-                        ])
+                    if result.technical_analysis:
+                        report_lines.append(f"**{labels['technical_indicators_label']}**: {result.technical_analysis}")
+                    if result.ma_analysis:
+                        report_lines.append(f"**{labels['ma_alignment_label']}**: {result.ma_analysis}")
+                    if result.pattern_analysis:
+                        report_lines.append(f"**{_nlabel('Pattern', 'K线形态', '캔들 패턴')}**: {result.pattern_analysis}")
+                    if result.trend_analysis:
+                        report_lines.append(f"**{_nlabel('Trend Shape', '走势形态', '추세 형태')}**: {result.trend_analysis}")
+                    if result.short_term_outlook:
+                        report_lines.append(f"**{_nlabel('Short (1-3d)', '短期（1-3日）', '단기(1-3일)')}**: {result.short_term_outlook}")
+                    if result.medium_term_outlook:
+                        report_lines.append(f"**{_nlabel('Mid (1-2w)', '中期（1-2周）', '중기(1-2주)')}**: {result.medium_term_outlook}")
+                    if result.technical_analysis or result.ma_analysis or result.pattern_analysis or result.trend_analysis or result.short_term_outlook or result.medium_term_outlook:
+                        report_lines.append("")
                     # 量能分析
                     if vol_data:
                         report_lines.extend([
@@ -1464,7 +1492,7 @@ class NotificationService(
                                 f"{chip_data.get('concentration', 'N/A')} {chip_health}",
                                 "",
                             ])
-                    else:
+                    elif data_persp:
                         chip_unavailable_reason = get_chip_unavailable_reason(data_persp, report_language)
                         if chip_unavailable_reason:
                             report_lines.extend([
@@ -1472,85 +1500,125 @@ class NotificationService(
                                 "",
                             ])
 
-                self._append_phase_decision_block(report_lines, dashboard, labels)
-
-                # ========== 作战计划 ==========
-                battle = dashboard.get('battle_plan', {}) if dashboard else {}
-                if battle:
+                # ====== ⑤ 基本面估值 ======
+                if result.fundamental_analysis or result.sector_position or result.company_highlights or result.key_points:
                     report_lines.extend([
-                        f"### 🎯 {labels['battle_plan_heading']}",
+                        f"### 💼 {labels['fundamentals_heading']}",
                         "",
                     ])
-                    # 狙击点位
-                    sniper = battle.get('sniper_points', {})
-                    if sniper:
-                        report_lines.extend([
-                            f"**📍 {labels['action_points_heading']}**",
-                            "",
-                            f"| {labels['action_points_heading']} | {labels['current_price_label']} |",
-                            "|---------|------|",
-                            f"| 🎯 {labels['ideal_buy_label']} | {self._clean_sniper_value(sniper.get('ideal_buy', 'N/A'))} |",
-                            f"| 🔵 {labels['secondary_buy_label']} | {self._clean_sniper_value(sniper.get('secondary_buy', 'N/A'))} |",
-                            f"| 🛑 {labels['stop_loss_label']} | {self._clean_sniper_value(sniper.get('stop_loss', 'N/A'))} |",
-                            f"| 🎊 {labels['take_profit_label']} | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
-                            "",
-                        ])
-                    # 仓位策略
-                    position = battle.get('position_strategy', {})
-                    if position:
-                        report_lines.extend([
-                            f"**💰 {labels['suggested_position_label']}**: {position.get('suggested_position', 'N/A')}",
-                            f"- {labels['entry_plan_label']}: {position.get('entry_plan', 'N/A')}",
-                            f"- {labels['risk_control_label']}: {position.get('risk_control', 'N/A')}",
-                            "",
-                        ])
-                    # 检查清单
-                    checklist = battle.get('action_checklist', []) if battle else []
-                    if checklist:
-                        report_lines.extend([
-                            f"**✅ {labels['checklist_heading']}**",
-                            "",
-                        ])
-                        for item in checklist:
-                            report_lines.append(f"- {item}")
-                        report_lines.append("")
-
-                # ========== 信号归因分析 ==========
-                signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
-                if signal_attribution_has_content(signal_attr):
-                    report_lines.extend([
-                        f"### 🎯 {labels['signal_attribution_heading']}",
-                        "",
-                    ])
-                    weight_items = signal_attribution_weight_items(signal_attr)
-                    if weight_items:
-                        report_lines.append(f"**{labels['attribution_weights_label']}**:")
-                        weight_labels = {
-                            "technical_indicators": ("📈", labels['technical_indicators_label']),
-                            "news_sentiment": ("📰", labels['news_sentiment_label']),
-                            "fundamentals": ("📊", labels['fundamentals_label']),
-                            "market_conditions": ("🌐", labels['market_conditions_label']),
-                        }
-                        for key, value in weight_items:
-                            icon, label = weight_labels[key]
-                            report_lines.append(f"- {icon} {label}: {value}%")
-                        report_lines.append("")
-
-                    # 最强信号
-                    if signal_attr.get('strongest_bullish_signal'):
-                        report_lines.append(f"**🐂 {labels['strongest_bullish_signal_label']}**: {signal_attr['strongest_bullish_signal']}")
-                    if signal_attr.get('strongest_bearish_signal'):
-                        report_lines.append(f"**🐻 {labels['strongest_bearish_signal_label']}**: {signal_attr['strongest_bearish_signal']}")
+                    if result.fundamental_analysis:
+                        report_lines.append(f"**{labels['fundamental_analysis_label']}**: {result.fundamental_analysis}")
+                    if result.sector_position:
+                        report_lines.append(f"**{labels['sector_position_label']}**: {result.sector_position}")
+                    if result.company_highlights:
+                        report_lines.append(f"**{labels['company_highlights_label']}**: {result.company_highlights}")
+                    if result.key_points:
+                        report_lines.append(f"**{_nlabel('Key Points', '核心看点', '핵심 포인트')}**: {result.key_points}")
                     report_lines.append("")
-
-                # ========== 多策略综合 ==========
-                strategy_synthesis = normalize_strategy_synthesis_payload(
-                    dashboard.get('strategy_synthesis') if dashboard else None
-                )
-                _append_strategy_synthesis_block(report_lines, strategy_synthesis, labels, report_language)
-
                 # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
                 self._append_fundamental_blocks(report_lines, result)
+
+                # ====== ⑥ 新闻/公告/催化与风险 ======
+                news_disclosure = self._empty_news_disclosure(result, report_language)
+                if intel or result.news_summary or result.market_sentiment or result.hot_topics or news_disclosure:
+                    report_lines.extend([
+                        f"### 📰 {labels['news_events_heading']}",
+                        "",
+                    ])
+                    if news_disclosure:
+                        report_lines.append(news_disclosure)
+                        report_lines.append("")
+                    # 舆情情绪总结
+                    if intel.get('sentiment_summary'):
+                        report_lines.append(f"**💭 {labels['sentiment_summary_label']}**: {intel['sentiment_summary']}")
+                    # 业绩预期
+                    if intel.get('earnings_outlook'):
+                        report_lines.append(f"**📊 {labels['earnings_outlook_label']}**: {intel['earnings_outlook']}")
+                    # 风险警报（醒目显示）
+                    risk_alerts = intel.get('risk_alerts', [])
+                    if risk_alerts:
+                        report_lines.append("")
+                        report_lines.append(f"**🚨 {labels['risk_alerts_label']}**:")
+                        for alert in risk_alerts:
+                            report_lines.append(f"- {alert}")
+                    # 利好催化
+                    catalysts = intel.get('positive_catalysts', [])
+                    if catalysts:
+                        report_lines.append("")
+                        report_lines.append(f"**✨ {labels['positive_catalysts_label']}**:")
+                        for cat in catalysts:
+                            report_lines.append(f"- {cat}")
+                    # 最新消息（保留日期与来源）
+                    if intel.get('latest_news'):
+                        report_lines.append("")
+                        report_lines.append(f"**📢 {labels['latest_news_label']}**: {intel['latest_news']}")
+                    elif result.news_summary:
+                        report_lines.append("")
+                        report_lines.append(f"**📰 {_nlabel('News Summary', '新闻摘要', '뉴스 요약')}**: {result.news_summary}")
+                    if result.market_sentiment and not intel.get('sentiment_summary'):
+                        report_lines.append("")
+                        report_lines.append(f"**📊 {_nlabel('Market Sentiment', '市场情绪', '시장 심리')}**: {result.market_sentiment}")
+                    if result.hot_topics:
+                        report_lines.append("")
+                        report_lines.append(f"**🔥 {_nlabel('Hot Topics', '相关热点', '관련 이슈')}**: {result.hot_topics}")
+                    report_lines.append("")
+
+                # ====== ⑦ 条件检查 ======
+                checklist = battle.get('action_checklist', []) if battle else []
+                if checklist:
+                    report_lines.extend([
+                        f"### ✅ {labels['condition_check_heading']}",
+                        "",
+                    ])
+                    for item in checklist:
+                        report_lines.append(f"- {item}")
+                    report_lines.append("")
+
+                # ====== ⑧ 下一观察点 ======
+                watch_conditions = self._phase_decision_list(phase_decision.get('watch_conditions'))
+                has_phase_content = any([
+                    phase_decision.get('action_window'),
+                    phase_decision.get('immediate_action'),
+                    watch_conditions,
+                    phase_decision.get('next_check_time'),
+                    phase_decision.get('confidence_reason'),
+                ])
+                if has_phase_content:
+                    report_lines.extend([
+                        f"### 🔭 {labels['next_observation_heading']}",
+                        "",
+                    ])
+                    if phase_decision.get('action_window'):
+                        report_lines.append(
+                            f"**{labels['phase_decision_heading']}｜{labels['action_window_label']}**: "
+                            f"{phase_decision['action_window']}"
+                        )
+                    if phase_decision.get('immediate_action'):
+                        report_lines.append(f"**{labels['immediate_action_label']}**: {phase_decision['immediate_action']}")
+                    if watch_conditions:
+                        report_lines.append(f"**{labels['watch_conditions_label']}**:")
+                        for condition in watch_conditions:
+                            report_lines.append(f"- {condition}")
+                    if phase_decision.get('next_check_time'):
+                        report_lines.append(f"**{labels['next_check_time_label']}**: {phase_decision['next_check_time']}")
+                    if phase_decision.get('confidence_reason'):
+                        report_lines.append(
+                            f"**{labels['confidence_reason_label']}**: {phase_decision['confidence_reason']}"
+                        )
+                    report_lines.append("")
+
+                # ====== ⑨ 数据完整性 ======
+                data_limitations = self._phase_decision_list(phase_decision.get('data_limitations'))
+                if data_limitations or result.data_sources:
+                    report_lines.extend([
+                        f"### 🔍 {labels['data_integrity_heading']}",
+                        "",
+                    ])
+                    for limitation in data_limitations:
+                        report_lines.append(f"- {limitation}")
+                    if result.data_sources:
+                        report_lines.append(f"**{labels['source_label']}**: {result.data_sources}")
+                    report_lines.append("")
 
                 # 如果没有 dashboard，显示传统格式
                 if not dashboard:

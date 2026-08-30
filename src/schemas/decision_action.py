@@ -508,3 +508,28 @@ def display_decision_type_for_result(
     if legacy in {"buy", "hold", "sell"}:
         return legacy
     return "hold"
+
+
+_BEARISH_FINAL_ACTIONS = {"reduce", "sell", "avoid", "alert"}
+
+
+def is_bearish_final_result(
+    result: Any,
+    report_language: Optional[str] = None,
+) -> bool:
+    """Whether the final decision is bearish (reduce/sell/avoid/alert or bearish trend).
+
+    When true, report surfaces must not offer entry/trial-position points to
+    investors without positions; only observation zones and turn-strong
+    confirmation conditions may be shown.
+    """
+    action = display_action_fields_for_result(
+        result,
+        report_language=report_language,
+    )["action"]
+    if action in _BEARISH_FINAL_ACTIONS:
+        return True
+    if str(getattr(result, "decision_type", "") or "").strip().lower() == "sell":
+        return True
+    trend = str(getattr(result, "trend_prediction", "") or "")
+    return "看空" in trend or "bearish" in trend.lower()

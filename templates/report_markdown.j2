@@ -44,15 +44,19 @@
 ⏰ **{{ labels.time_sensitivity_label }}**: {{ core.get('time_sensitivity', labels.default_time_sensitivity) }}
 
 {% set pos_advice = core.get('position_advice', {}) %}
+{% set bearish_dashboard = is_bearish_final(result, report_language) %}
 {% if pos_advice %}
 | {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
 |---------|---------|
-| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
+| 🆕 **{{ labels.no_position_label }}** | {{ sanitize_bearish_entry_text(pos_advice.get('no_position')) if bearish_dashboard and pos_advice.get('no_position') else pos_advice.get('no_position', e.localized_operation_advice) }} |
 | 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
 {% endif %}
 
 {% if signal_attribution_has_content(signal_attr) %}
 **{{ labels.signal_attribution_heading }}**:
+{% if signal_attr.get('dominant_factor') %}
+- 🧭 **{{ labels.dominant_factor_label }}**: {{ signal_attr.get('dominant_factor') }}
+{% endif %}
 {% if signal_attr.get('strongest_bullish_signal') %}
 - 🟢 **{{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
 {% endif %}
@@ -74,29 +78,39 @@
 {% if battle %}
 ### 📋 {{ labels.operation_plan_heading }}
 
+{% set bearish_final = is_bearish_final(result, report_language) %}
+{% if bearish_final %}
+⚠️ {{ labels.bearish_no_entry_note }}
+
+{% endif %}
 {% set sniper = battle.get('sniper_points', {}) %}
 {% if sniper %}
 | {{ labels.action_points_heading }} | {{ labels.current_price_label }} |
 |---------|------|
+{% if bearish_final %}
+| 👀 {{ labels.observation_zone_label }} | {{ clean_sniper(sanitize_bearish_entry_text(sniper.get('ideal_buy'))) }} |
+| 🔁 {{ labels.turn_strong_confirmation_label }} | {{ clean_sniper(sanitize_bearish_entry_text(sniper.get('secondary_buy'))) }} |
+{% else %}
 | 🎯 {{ labels.ideal_buy_label }} | {{ clean_sniper(sniper.get('ideal_buy')) }} |
 | 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
-| 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
-| 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
+{% endif %}
 {% endif %}
 
 {% set position = battle.get('position_strategy', {}) %}
 {% if position %}
 **💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}
-- {{ labels.entry_plan_label }}: {{ position.get('entry_plan', 'N/A') }}
+- {{ labels.entry_plan_label }}: {{ sanitize_bearish_entry_text(position.get('entry_plan')) if bearish_final and position.get('entry_plan') else position.get('entry_plan', 'N/A') }}
 - {{ labels.risk_control_label }}: {{ position.get('risk_control', 'N/A') }}
 {% endif %}
 {% endif %}
 
-{# ====== 3. 关键价位&风险收益（合并） ====== #}
+{# ====== 3. 关键价位与风险收益 ====== #}
 {% set price_data = data_persp.get('price_position', {}) %}
 {% set sniper = battle.get('sniper_points', {}) %}
 {% if price_data or (sniper.get('take_profit') and sniper.get('stop_loss')) %}
 ### 📍 {{ labels.key_price_and_risk_reward_heading }}
+
+ℹ️ {{ labels.price_level_distinction_note }}
 
 {% if price_data %}
 | {{ labels.price_metrics_label }} | {{ labels.current_price_label }} |
@@ -229,12 +243,11 @@
 {% if intel.get('latest_news') %}
 
 **📢 {{ labels.latest_news_label }}**: {{ intel.latest_news }}
-{% endif %}
-{% if result.news_summary %}
+{% elif result.news_summary %}
 
 **📰 新闻摘要**: {{ result.news_summary }}
 {% endif %}
-{% if result.market_sentiment %}
+{% if result.market_sentiment and not intel.get('sentiment_summary') %}
 
 **📊 市场情绪**: {{ result.market_sentiment }}
 {% endif %}
@@ -255,10 +268,13 @@
 {% endif %}
 
 {# ====== 8. 下一观察点 ====== #}
-{% set has_observation = phase_decision.get('watch_conditions') or phase_decision.get('immediate_action') or phase_decision.get('next_check_time') %}
+{% set has_observation = phase_decision.get('action_window') or phase_decision.get('watch_conditions') or phase_decision.get('immediate_action') or phase_decision.get('next_check_time') or phase_decision.get('confidence_reason') %}
 {% if has_observation %}
 ### 🔭 {{ labels.next_observation_heading }}
 
+{% if phase_decision.get('action_window') %}
+**{{ labels.phase_decision_heading }}｜{{ labels.action_window_label }}**: {{ phase_decision.get('action_window') }}
+{% endif %}
 {% if phase_decision.get('immediate_action') %}
 **{{ labels.immediate_action_label }}**: {{ phase_decision.get('immediate_action') }}
 {% endif %}

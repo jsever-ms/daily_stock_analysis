@@ -1233,32 +1233,22 @@ class HistoryService:
                     report_lines.append(f"- {item}")
                 report_lines.append("")
 
-        # ========== 信号归因分析 ==========
+        # ========== 信号归因分析（定性归因：主导因素 + 主要看多/看空因素，不展示百分比权重） ==========
         signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
         if signal_attribution_has_content(signal_attr):
             report_lines.extend([
                 f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
                 "",
             ])
-            weight_items = signal_attribution_weight_items(signal_attr)
-            if weight_items:
-                report_lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
-                weight_labels = {
-                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
-                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
-                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
-                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
-                }
-                for key, value in weight_items:
-                    icon, label = weight_labels[key]
-                    report_lines.append(f"- {icon} {label}: {value}%")
-                report_lines.append("")
+            dominant = signal_attr.get('dominant_factor')
             bullish = signal_attr.get('strongest_bullish_signal')
             bearish = signal_attr.get('strongest_bearish_signal')
+            if dominant:
+                report_lines.append(f"**🧭 {labels.get('dominant_factor_label', '主导因素')}**: {dominant}")
             if bullish:
-                report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+                report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '主要看多因素')}**: {bullish}")
             if bearish:
-                report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+                report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '主要看空因素')}**: {bearish}")
             report_lines.append("")
 
         # ========== 多策略综合 ==========

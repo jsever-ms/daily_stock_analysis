@@ -966,7 +966,9 @@ def _stock_data(markdown_text: str, generated_on: date) -> StockPoster:
             name = re.sub(r"(?:分析报告|analysis report)$", "", name, flags=re.IGNORECASE).strip()
 
     score_match = re.search(r"(?:评分|score)\s*[:：]?\s*\*{0,2}(\d{1,3})", markdown_text, re.IGNORECASE)
-    core = _section(markdown_text, "核心结论", "core conclusion", "核心判断")
+    core = _section(
+        markdown_text, "核心结论", "core conclusion", "核心判断", "决策仪表盘", "decision dashboard", "결정 대시보드"
+    )
     action_terms = (
         "买入", "加仓", "持有", "观望", "减仓", "卖出", "回避", "警戒",
         "buy", "add", "hold", "watch", "reduce", "sell", "avoid", "alert",
@@ -1036,9 +1038,15 @@ def _stock_data(markdown_text: str, generated_on: date) -> StockPoster:
             poster.snapshot.append((label, value, tone))
     poster.data_source = _mapped_value(snapshot_map, "数据源", "行情来源", "source")
 
-    data_section = _section(markdown_text, "数据透视", "data view", "技术面", "technicals")
+    data_section = _section(
+        markdown_text, "数据透视", "data view", "技术面", "technicals", "技术与量价", "technicals & volume", "기술"
+    )
     data_map: dict[str, str] = {}
     for table in _parse_tables(data_section):
+        data_map.update(_table_map(table))
+    # 支撑/压力位在九段式结构中位于「关键价位与风险收益」小节
+    price_section = _section(markdown_text, "关键价位", "key price", "주요 가격대")
+    for table in _parse_tables(price_section):
         data_map.update(_table_map(table))
     ma = _labeled_value(data_section, "均线排列", "MA Alignment", limit=42)
     ma = next((label for label in ("多头排列", "空头排列") if label in ma), _compact_text(ma, limit=16))
@@ -1054,7 +1062,9 @@ def _stock_data(markdown_text: str, generated_on: date) -> StockPoster:
         if value:
             poster.technical.append((label, value, tone))
 
-    battle = _section(markdown_text, "作战计划", "battle plan", "操作计划", "操作点位", "action levels")
+    battle = _section(
+        markdown_text, "作战计划", "battle plan", "操作计划", "操作点位", "action levels", "operation plan", "운용 계획"
+    )
     sniper_table = _find_table(battle, "理想") or _find_table(battle, "ideal")
     sniper_values: dict[str, str] = {}
     if sniper_table:
@@ -1082,7 +1092,9 @@ def _stock_data(markdown_text: str, generated_on: date) -> StockPoster:
         if value:
             poster.sniper.append(("确认买入" if display == "次优买入" else display, value, tone))
 
-    info = _section(markdown_text, "重要信息", "key updates", "消息面", "news flow")
+    info = _section(
+        markdown_text, "重要信息", "key updates", "消息面", "news flow", "新闻", "news", "뉴스"
+    )
     poster.catalysts = [
         _compact_text(item, limit=36)
         for item in _list_after_label(info, "利好催化", "positive catalysts")[:2]

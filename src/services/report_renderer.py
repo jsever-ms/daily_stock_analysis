@@ -39,10 +39,12 @@ from src.schemas.decision_action import (
     display_action_fields_for_result,
     display_decision_type_for_result,
     display_operation_advice_for_result,
+    is_bearish_final_result,
     localize_action_label,
 )
 from src.utils.data_processing import (
     normalize_model_used,
+    sanitize_bearish_entry_text,
     signal_attribution_has_content,
     signal_attribution_weight_items,
 )
@@ -247,6 +249,8 @@ def render(
         "strategy_invalid_opinion_count": strategy_invalid_opinion_count,
         "signal_attribution_has_content": signal_attribution_has_content,
         "signal_attribution_weight_items": signal_attribution_weight_items,
+        "is_bearish_final": is_bearish_final_result,
+        "sanitize_bearish_entry_text": sanitize_bearish_entry_text,
     }
     if extra_context:
         safe_extra_context = dict(extra_context)

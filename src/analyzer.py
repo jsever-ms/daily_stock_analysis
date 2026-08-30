@@ -2012,12 +2012,9 @@ class GeminiAnalyzer:
         },
 
         "signal_attribution": {
-            "technical_indicators": 技术指标贡献度(0-100),
-            "news_sentiment": 新闻舆情贡献度(0-100),
-            "fundamentals": 基本面贡献度(0-100),
-            "market_conditions": 市场环境贡献度(0-100),
-            "strongest_bullish_signal": "最强看多信号名称",
-            "strongest_bearish_signal": "最强看空信号名称"
+            "dominant_factor": "主导因素：技术面/消息面/基本面/资金面（单一说明，不使用百分比）",
+            "strongest_bullish_signal": "主要看多因素（一句话+关键证据）",
+            "strongest_bearish_signal": "主要看空因素（一句话+关键证据）"
         }
     },
 
@@ -2091,13 +2088,17 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- `dashboard.signal_attribution` 中不要输出百分比权重，只输出最强看多信号（`strongest_bullish_signal`）和最强看空信号（`strongest_bearish_signal`）的名称。
+- `dashboard.signal_attribution` 不输出百分比权重（无确定性量化算法支持）；只输出主导因素（`dominant_factor`）、主要看多因素（`strongest_bullish_signal`）和主要看空因素（`strongest_bearish_signal`）。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 - 新闻/公告/处罚/停牌/减持/业绩/研报等重要事实必须附带日期和来源名称；高影响事件无可靠来源时不得作为确定事实，应标记"待验证"。禁止无来源断言。
 - 严格区分"筹码分布数据"（获利比例/平均成本/集中度）和"股东户数变化"，不得将后者直接等同于筹码集中；`chip_structure` 只反映筹码分布，股东户数变化应放在 `intelligence` 或 `news_summary` 中说明。
 - 下一观察点（`watch_conditions`）必须基于支撑位/压力位/均线等具体价格条件生成可执行检查项，如"突破XX元时买入"或"跌破XX元止损"。
+- 决策口径全局一致：当最终动作为减仓/卖出/看空时，`position_advice.no_position` 与 `sniper_points` 中不得出现买入点/试仓点/轻仓试探等表述，只能给出观察区和转强确认条件，空仓者默认观望。
+- 只有当趋势状态至少恢复到中性（均线止跌修复、量价企稳）且 `action_checklist` 必要条件满足后，才允许出现试仓/买入建议。
+- 同一观点只在一个模块完整展开（如"空头排列、跌破MA20、反弹减仓"只出现一次），其他模块仅引用结论，不得重复表述。
+- `stop_loss`（止损位，操作执行位）、`support_level`（支撑位，技术参考位）、`resistance_level`（压力位，技术参考位）、`take_profit`（目标位，操作执行位）是四个不同概念，取值和表述不得混用或互相替代。
 - `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
-- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
+- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；盈亏比由程序根据当前价、止损位、目标位计算并在报告中自动展示，模型只需给出准确的价格数值；若盈亏比 < 1，操作建议应提示风险。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -2174,8 +2175,8 @@ class GeminiAnalyzer:
 
         "battle_plan": {
             "sniper_points": {
-                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
-                "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
+                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件；若最终动作为减仓/卖出/看空，此处改为观察区描述，不出现买入点/试仓点）",
+                "secondary_buy": "次优入场位：XX元（更保守或确认后执行；若最终动作为减仓/卖出/看空，此处改为转强确认条件，如'站稳XX元且量能配合'）",
                 "stop_loss": "止损位：XX元（失效条件或X%风险）",
                 "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
             },
@@ -2205,12 +2206,9 @@ class GeminiAnalyzer:
         },
 
         "signal_attribution": {
-            "technical_indicators": 技术指标贡献度(0-100),
-            "news_sentiment": 新闻舆情贡献度(0-100),
-            "fundamentals": 基本面贡献度(0-100),
-            "market_conditions": 市场环境贡献度(0-100),
-            "strongest_bullish_signal": "最强看多信号名称",
-            "strongest_bearish_signal": "最强看空信号名称"
+            "dominant_factor": "主导因素：技术面/消息面/基本面/资金面（单一说明，不使用百分比）",
+            "strongest_bullish_signal": "主要看多因素（一句话+关键证据）",
+            "strongest_bearish_signal": "主要看空因素（一句话+关键证据）"
         }
     },
 
@@ -2282,13 +2280,17 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- `dashboard.signal_attribution` 中不要输出百分比权重，只输出最强看多信号（`strongest_bullish_signal`）和最强看空信号（`strongest_bearish_signal`）的名称。
+- `dashboard.signal_attribution` 不输出百分比权重（无确定性量化算法支持）；只输出主导因素（`dominant_factor`）、主要看多因素（`strongest_bullish_signal`）和主要看空因素（`strongest_bearish_signal`）。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 - 新闻/公告/处罚/停牌/减持/业绩/研报等重要事实必须附带日期和来源名称；高影响事件无可靠来源时不得作为确定事实，应标记"待验证"。禁止无来源断言。
 - 严格区分"筹码分布数据"（获利比例/平均成本/集中度）和"股东户数变化"，不得将后者直接等同于筹码集中；`chip_structure` 只反映筹码分布，股东户数变化应放在 `intelligence` 或 `news_summary` 中说明。
 - 下一观察点（`watch_conditions`）必须基于支撑位/压力位/均线等具体价格条件生成可执行检查项，如"突破XX元时买入"或"跌破XX元止损"。
+- 决策口径全局一致：当最终动作为减仓/卖出/看空时，`position_advice.no_position` 与 `sniper_points` 中不得出现买入点/试仓点/轻仓试探等表述，只能给出观察区和转强确认条件，空仓者默认观望。
+- 只有当趋势状态至少恢复到中性（均线止跌修复、量价企稳）且 `action_checklist` 必要条件满足后，才允许出现试仓/买入建议。
+- 同一观点只在一个模块完整展开（如"空头排列、跌破MA20、反弹减仓"只出现一次），其他模块仅引用结论，不得重复表述。
+- `stop_loss`（止损位，操作执行位）、`support_level`（支撑位，技术参考位）、`resistance_level`（压力位，技术参考位）、`take_profit`（目标位，操作执行位）是四个不同概念，取值和表述不得混用或互相替代。
 - `action_checklist` 中的检查项区分"必要条件"和"辅助条件"，关键必要条件未满足时即使满足数量较多也不得产生买入信号。
-- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；若盈亏比 < 1，操作建议应提示风险。"""
+- 将风险收益分析纳入最终决策：`sniper_points` 中的 `take_profit` 和 `stop_loss` 应体现盈亏比；盈亏比由程序根据当前价、止损位、目标位计算并在报告中自动展示，模型只需给出准确的价格数值；若盈亏比 < 1，操作建议应提示风险。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 

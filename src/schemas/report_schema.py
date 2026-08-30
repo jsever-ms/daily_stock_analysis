@@ -129,6 +129,7 @@ class PhaseDecision(BaseModel):
 class SignalAttribution(BaseModel):
     """Signal attribution analysis - explains what factors contributed most to the recommendation."""
 
+    dominant_factor: Optional[str] = None
     technical_indicators: Optional[Union[int, float, str]] = None
     news_sentiment: Optional[Union[int, float, str]] = None
     fundamentals: Optional[Union[int, float, str]] = None
