@@ -146,6 +146,37 @@ class TaskService:
         records = db.get_analysis_history(code=code, query_id=query_id, days=days, limit=limit)
         return [r.to_dict() for r in records]
 
+    def _notify_user_failure(
+        self,
+        source_message: Optional[BotMessage],
+        code: str,
+        stage: str,
+    ) -> None:
+        """后台分析失败时，向发起命令的用户回复可见的失败提示（不抛异常）。
+
+        Telegram 回复文案为：
+        ``❌ 深度分析失败 股票：<label> 失败阶段：<stage>``
+        绝不包含 traceback / API Key / 内部 Secret。
+        """
+        if not source_message or getattr(source_message, "platform", None) != "telegram":
+            return
+        try:
+            from src.services.stock_resolver import resolve_stock_label
+            from src.config import get_config
+            from src.notification_sender.telegram_sender import TelegramSender
+
+            label = resolve_stock_label(code)
+            sender = TelegramSender(get_config())
+            sender.send_to_telegram(
+                f"❌ 深度分析失败 股票：{label} 失败阶段：{stage}",
+                chat_id=source_message.chat_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "[TaskService] 通知用户后台分析失败消息发送失败: exception=%s, msg=%s",
+                type(exc).__name__, str(exc)[:200],
+            )
+
     def _run_analysis(
         self,
         code: str,
@@ -229,6 +260,7 @@ class TaskService:
                     })
 
                 logger.warning(f"[TaskService] 股票 {code} 分析失败: {fail_message}")
+                self._notify_user_failure(source_message, code, "分析执行")
                 return {"success": False, "task_id": task_id, "error": fail_message}
 
         except Exception as e:
@@ -242,6 +274,7 @@ class TaskService:
                     "error": error_msg
                 })
 
+            self._notify_user_failure(source_message, code, "分析异常")
             return {"success": False, "task_id": task_id, "error": error_msg}
 
 

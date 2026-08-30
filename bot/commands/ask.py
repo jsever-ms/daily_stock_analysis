@@ -943,6 +943,7 @@ class AskCommand(BotCommand):
         # ASK_FAST_MODEL 优先用于 Fast Pipeline 最终总结，空则继承 LITELLM_MODEL
         llm_result = None
         llm_error_category = None
+        llm_elapsed = 0.0
         try:
             from src.agent.llm_adapter import LLMToolAdapter
 
@@ -955,40 +956,69 @@ class AskCommand(BotCommand):
                 )
 
             adapter = LLMToolAdapter(pipeline_config)
+            route_resolution = getattr(adapter, "_route_resolution", None)
+            primary_model = (
+                getattr(route_resolution, "primary_model", None)
+                or getattr(pipeline_config, "litellm_model", "")
+                or ""
+            )
+            primary_provider = (
+                adapter.primary_provider
+                if hasattr(adapter, "primary_provider")
+                else (primary_model.split("/")[0] if "/" in primary_model else primary_model)
+            )
+
+            logger.info(
+                "[FastPipeline] LLM_CALL_START stock_code=%s, model=%s, provider=%s, "
+                "timeout=%.1fs",
+                code, primary_model, primary_provider, _FAST_PIPELINE_LLM_TIMEOUT_S,
+            )
             llm_response = adapter.call_text(
                 messages=[{"role": "user", "content": llm_prompt}],
                 temperature=0.3,
                 max_tokens=1200,
                 timeout=_FAST_PIPELINE_LLM_TIMEOUT_S,
             )
+            llm_elapsed = time.monotonic() - t_llm_start
 
             if llm_response.provider == "error":
                 llm_error_category = "LLM_CALL_FAILED"
+                error_type = getattr(llm_response, "error_type", None) or "PROVIDER_ERROR"
+                http_status = getattr(llm_response, "http_status", None)
                 logger.error(
-                    "[FastPipeline] LLM_CALL_FAILED for %s: provider=error, msg=%s, model=%s",
-                    code, llm_response.content, llm_response.model,
+                    "[FastPipeline] LLM_CALL_FAILED stock_code=%s, model=%s, provider=%s, "
+                    "error_type=%s, http_status=%s, elapsed=%.1fs, msg=%s",
+                    code, llm_response.model, llm_response.provider, error_type,
+                    http_status, llm_elapsed, str(llm_response.content or "")[:200],
                 )
             elif llm_response.content and len(llm_response.content.strip()) > 50:
                 llm_result = llm_response.content.strip()
                 logger.info(
-                    "[FastPipeline] LLM summary OK for %s: model=%s, provider=%s, len=%d",
-                    code, llm_response.model, llm_response.provider, len(llm_response.content),
+                    "[FastPipeline] LLM_CALL_SUCCESS stock_code=%s, model=%s, provider=%s, "
+                    "elapsed=%.1fs, content_len=%d",
+                    code, llm_response.model, llm_response.provider, llm_elapsed,
+                    len(llm_response.content),
                 )
             else:
                 llm_error_category = "LLM_RESPONSE_PARSE_FAILED"
                 content_preview = (llm_response.content or "")[:200]
                 logger.error(
-                    "[FastPipeline] LLM_RESPONSE_PARSE_FAILED for %s: "
-                    "model=%s, provider=%s, content_len=%d, preview=%r",
-                    code, llm_response.model, llm_response.provider,
+                    "[FastPipeline] LLM_RESPONSE_PARSE_FAILED stock_code=%s, model=%s, "
+                    "provider=%s, elapsed=%.1fs, content_len=%d, preview=%r",
+                    code, llm_response.model, llm_response.provider, llm_elapsed,
                     len(llm_response.content or ""), content_preview,
                 )
         except Exception as exc:
+            from src.agent.llm_adapter import classify_llm_exception
+
             llm_error_category = "LLM_CALL_FAILED"
+            error_type, http_status = classify_llm_exception(exc)
+            llm_elapsed = time.monotonic() - t_llm_start
             logger.error(
-                "[FastPipeline] LLM_CALL_FAILED for %s: type=%s, msg=%s",
-                code, type(exc).__name__, exc,
-                exc_info=True,
+                "[FastPipeline] LLM_CALL_FAILED stock_code=%s, error_type=%s, http_status=%s, "
+                "elapsed=%.1fs, exception=%s, msg=%s",
+                code, error_type, http_status, llm_elapsed, type(exc).__name__,
+                str(exc)[:200],
             )
 
         t_llm = time.monotonic() - t_llm_start

@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [改进] `/ask` Fast Pipeline 增加 LLM 四分类诊断日志：`LLM_CALL_START` / `LLM_CALL_SUCCESS` / `LLM_CALL_FAILED` / `LLM_RESPONSE_PARSE_FAILED`，记录 stock_code/model/provider/elapsed/exception 类型/HTTP status；`LLMResponse` 新增 `error_type`/`http_status` 诊断字段，LLM 异常统一分类为 TIMEOUT/RATE_LIMIT/AUTH/HTTP_ERROR/API_CONNECTION/CONTEXT_WINDOW/CONFIG/OTHER，不打印 API Key/Authorization/完整 Secret
+- [改进] `/analyze` 增加 `[ANALYZE-DIAG]` 全链路阶段日志：RECEIVED → COMMAND_MATCHED → STOCK_RESOLVED → TASK_SUBMIT_START → TASK_SUBMIT_SUCCESS → ACK_SEND_START → ACK_SEND_SUCCESS，任一步失败记录 FAILED 并带 stage/stock_code/task_id/exception 类型/错误信息；后台深度分析失败不影响任务提交 ACK
+- [改进] Telegram 发送层诊断：`[TelegramSender] SEND_COMPLETE` / `SEND_FAILED` 记录脱敏 chat_id（仅最后 4 位）、sendMessage HTTP status、Telegram ok、error description、elapsed；禁止打印完整 chat_id 与 Bot Token
+- [改进] `/analyze` 增加用户可见失败兜底：命令解析/股票解析/任务提交失败时回复「❌ 深度分析任务提交失败 阶段：xxx 请稍后重试」；后台深度分析失败时向发起用户回复「❌ 深度分析失败 股票：xxx 失败阶段：xxx」，不暴露 traceback/API Key/内部 Secret
+- [改进] 运行版本诊断：进程启动日志（Telegram 轮询启动）与 `/status detail` 增加 git commit、Railway 部署/环境、Python 进程 PID、启动时间，便于实机核对实际处理消息的进程代码版本
+
 - [改进] Fast Pipeline 工具级性能诊断：新增 `_run_tool_safe` 函数，对每个数据源工具（quote/history/trend/news）分别记录耗时、成功/失败/exception，单行诊断日志输出；各工具设置独立 8s 超时，失败立即降级，不允许单工具阻塞 40~50s
 - [改进] Fast Pipeline 本地技术计算：trend 分析复用已获取的 K 线数据在本地用 pandas + StockTrendAnalyzer 计算 MA/MACD/RSI/量价，消除重复网络请求（原 `_handle_analyze_trend` 内部重新拉取 60 日历史数据是 49.4s 瓶颈根因）；数据不足 20 条时回退远端 trend 工具
 - [修复] `/status` 新增 Anspire 搜索状态显示：`search_anspire` 状态键填充、汇总、detail 明细行；修复此前 Anspire 已配置但仍显示「新闻搜索：❌」的问题

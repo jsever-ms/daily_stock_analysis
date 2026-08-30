@@ -92,6 +92,8 @@ class LLMResponse:
     provider: str = ""                     # which provider handled this call
     model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
+    error_type: Optional[str] = None       # 诊断字段：错误分类（TIMEOUT/RATE_LIMIT/AUTH/HTTP_ERROR/API_CONNECTION/CONTEXT_WINDOW/CONFIG/OTHER）
+    http_status: Optional[int] = None      # 诊断字段：provider HTTP 状态码（如 401/403/429/5xx）；无则 None
 
 
 # Models that auto-return reasoning_content; do NOT send extra_body (may cause 400).
@@ -175,6 +177,53 @@ def _split_provider_model(model: str) -> Tuple[str, str]:
         provider, remainder = normalized.split("/", 1)
         return provider.lower(), remainder.strip()
     return "openai", normalized
+
+
+# 异常分类关键字（按异常类型名/文本匹配，覆盖 LiteLLM 各 provider 异常子类）
+_TIMEOUT_MARKERS = ("Timeout", "TimeoutError", "APITimeoutError")
+_RATE_LIMIT_MARKERS = ("RateLimitError",)
+_AUTH_MARKERS = ("AuthenticationError", "BadRequestError", "ForbiddenError", "PermissionDeniedError")
+_CONNECTION_MARKERS = ("APIConnectionError", "ConnectionError", "ProxyError", "ConnectTimeout")
+_CONTEXT_MARKERS = ("ContextWindowExceededError", "ContentPolicyViolationError")
+
+
+def classify_llm_exception(exc: BaseException) -> Tuple[str, Optional[int]]:
+    """把一次 LLM 调用异常分类为 ``(error_type, http_status)``。
+
+    error_type 取值：``TIMEOUT`` / ``RATE_LIMIT`` / ``AUTH`` / ``HTTP_ERROR`` /
+    ``API_CONNECTION`` / ``CONTEXT_WINDOW`` / ``OTHER``。
+    http_status 为 provider 返回的 HTTP 状态码（从异常或其 ``response`` 提取），
+    无则返回 None。仅返回分类与状态码，绝不返回任何 Secret。
+    """
+    name = type(exc).__name__
+    text = str(exc).lower()
+
+    status: Optional[int] = None
+    for attr in ("status_code", "http_status", "code"):
+        raw = getattr(exc, attr, None)
+        if raw is None:
+            raw = getattr(getattr(exc, "response", None), "status_code", None)
+        if raw is not None:
+            try:
+                status = int(raw)
+            except (TypeError, ValueError):
+                status = None
+            if status:
+                break
+
+    if any(marker in name for marker in _TIMEOUT_MARKERS) or "timed out" in text:
+        return "TIMEOUT", status
+    if any(marker in name for marker in _RATE_LIMIT_MARKERS) or "rate limit" in text:
+        return "RATE_LIMIT", status or 429
+    if any(marker in name for marker in _AUTH_MARKERS) or status in (401, 403):
+        return "AUTH", status or 401
+    if any(marker in name for marker in _CONNECTION_MARKERS):
+        return "API_CONNECTION", None
+    if any(marker in name for marker in _CONTEXT_MARKERS) or "context length" in text or "maximum context" in text:
+        return "CONTEXT_WINDOW", status
+    if status is not None and status >= 400:
+        return "HTTP_ERROR", status
+    return "OTHER", status
 
 
 def _object_to_dict(value: Any) -> Dict[str, Any]:
@@ -641,7 +690,7 @@ class LLMToolAdapter:
                 f"{self._backend_error.message}"
             )
             logger.error(error_msg)
-            return LLMResponse(content=error_msg, provider="error")
+            return LLMResponse(content=error_msg, provider="error", error_type="CONFIG")
         route_resolution = resolve_agent_litellm_route(config)
         models_to_try = route_resolution.models_to_try
         if not models_to_try:
@@ -650,11 +699,13 @@ class LLMToolAdapter:
                 "or provider API keys before using Agent."
             )
             logger.error(error_msg)
-            return LLMResponse(content=error_msg, provider="error")
+            return LLMResponse(content=error_msg, provider="error", error_type="CONFIG")
         started_at = time.time()
         providers = [self._get_model_provider(model) for model in models_to_try]
 
         last_error = None
+        last_error_type: Optional[str] = None
+        last_http_status: Optional[int] = None
         hit_rate_limit = False
         for idx, model in enumerate(models_to_try):
             remaining_timeout = timeout
@@ -664,6 +715,8 @@ class LLMToolAdapter:
                     last_error = TimeoutError(
                         f"LLM completion timed out before trying fallback model {model}"
                     )
+                    last_error_type = "TIMEOUT"
+                    last_http_status = None
                     break
             try:
                 return self._call_litellm_model(
@@ -675,6 +728,9 @@ class LLMToolAdapter:
                     timeout=remaining_timeout,
                 )
             except Exception as e:
+                error_type, http_status = classify_llm_exception(e)
+                last_error_type = error_type
+                last_http_status = http_status
                 if isinstance(e, _resolve_litellm_exception("RateLimitError")):
                     logger.warning("Agent LLM rate-limited on %s: %s", model, e)
                     last_error = e
@@ -706,7 +762,12 @@ class LLMToolAdapter:
         suffix = " (rate-limit encountered during fallback)" if hit_rate_limit else ""
         error_msg = f"All LLM models failed{suffix}. Last error: {last_error}"
         logger.error(error_msg)
-        return LLMResponse(content=error_msg, provider="error")
+        return LLMResponse(
+            content=error_msg,
+            provider="error",
+            error_type=last_error_type or "OTHER",
+            http_status=last_http_status,
+        )
 
     @staticmethod
     def _get_model_provider(model: str) -> str:

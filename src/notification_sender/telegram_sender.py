@@ -56,6 +56,12 @@ class TelegramSender:
             return "*" * len(token)
         return f"{token[:4]}{'*' * (len(token) - 8)}{token[-4:]}"
 
+    @staticmethod
+    def _sanitize_chat_id(chat_id) -> str:
+        """脱敏 chat_id：只保留最后 4 位，前缀打码；禁止打印完整 chat_id。"""
+        cid = str(chat_id or "")
+        return f"***{cid[-4:]}" if len(cid) > 4 else "***"
+
     def _log_token_diagnostics(self, bot_token: str) -> None:
         """打印 Token 安全诊断信息（不含完整值），用于定位 401 类认证问题。
 
@@ -297,29 +303,51 @@ class TelegramSender:
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
+            attempt_started = time.time()
             try:
                 response = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
+                elapsed = time.time() - attempt_started
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                elapsed = time.time() - attempt_started
                 if attempt < max_retries:
                     delay = 2 ** attempt  # 2s, 4s
-                    logger.warning(f"Telegram request failed (attempt {attempt}/{max_retries}): {e}, "
-                                   f"retrying in {delay}s...")
+                    logger.warning(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, attempt=%d/%d, "
+                        "elapsed=%.2fs, exception=%s, msg=%s, retry_in=%.1fs",
+                        self._sanitize_chat_id(chat_id), attempt, max_retries,
+                        elapsed, type(e).__name__, str(e)[:200], delay,
+                    )
                     time.sleep(delay)
                     continue
                 else:
                     self.last_send_message_status = None
-                    logger.error(f"Telegram request failed after {max_retries} attempts: {e}")
+                    logger.error(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, attempt=%d/%d, "
+                        "elapsed=%.2fs, exception=%s, msg=%s",
+                        self._sanitize_chat_id(chat_id), attempt, max_retries,
+                        elapsed, type(e).__name__, str(e)[:200],
+                    )
                     return False
 
             self.last_send_message_status = response.status_code
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
-                    logger.info("Telegram 消息发送成功")
+                    logger.info(
+                        "[TelegramSender] SEND_COMPLETE chat_id=%s, http_status=%s, "
+                        "ok=%s, elapsed=%.2fs",
+                        self._sanitize_chat_id(chat_id), response.status_code,
+                        result.get('ok'), elapsed,
+                    )
                     return True
                 else:
                     error_desc = result.get('description', '未知错误')
-                    logger.error(f"Telegram 返回错误: {error_desc}")
+                    logger.error(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, http_status=%s, "
+                        "ok=%s, error_desc=%s, elapsed=%.2fs",
+                        self._sanitize_chat_id(chat_id), response.status_code,
+                        result.get('ok'), error_desc, elapsed,
+                    )
 
                     # If Markdown parsing failed, fall back to plain text
                     if self._should_fallback_to_plain_text(error_desc=error_desc):
@@ -331,25 +359,42 @@ class TelegramSender:
                 # Rate limited — respect Retry-After header
                 retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
                 if attempt < max_retries:
-                    logger.warning(f"Telegram rate limited, retrying in {retry_after}s "
-                                   f"(attempt {attempt}/{max_retries})...")
+                    logger.warning(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, http_status=429, "
+                        "elapsed=%.2fs, error_desc=rate_limited, retry_in=%.1fs "
+                        "(attempt %d/%d)",
+                        self._sanitize_chat_id(chat_id), elapsed, retry_after,
+                        attempt, max_retries,
+                    )
                     time.sleep(retry_after)
                     continue
                 else:
-                    logger.error(f"Telegram rate limited after {max_retries} attempts")
+                    logger.error(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, http_status=429, "
+                        "elapsed=%.2fs, error_desc=rate_limited (attempt %d/%d)",
+                        self._sanitize_chat_id(chat_id), elapsed, attempt, max_retries,
+                    )
                     return False
             else:
                 if attempt < max_retries and response.status_code >= 500:
                     delay = 2 ** attempt
-                    logger.warning(f"Telegram server error HTTP {response.status_code} "
-                                   f"(attempt {attempt}/{max_retries}), retrying in {delay}s...")
+                    logger.warning(
+                        "[TelegramSender] SEND_FAILED chat_id=%s, http_status=%s, "
+                        "elapsed=%.2fs, retry_in=%.1fs (attempt %d/%d)",
+                        self._sanitize_chat_id(chat_id), response.status_code,
+                        elapsed, delay, attempt, max_retries,
+                    )
                     time.sleep(delay)
                     continue
                 if self._should_fallback_to_plain_text(response_text=response.text):
                     if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
                         return True
-                logger.error(f"Telegram 请求失败: HTTP {response.status_code}")
-                logger.error(f"响应内容: {response.text}")
+                logger.error(
+                    "[TelegramSender] SEND_FAILED chat_id=%s, http_status=%s, "
+                    "ok=?, elapsed=%.2fs, error_desc=%s",
+                    self._sanitize_chat_id(chat_id), response.status_code,
+                    elapsed, response.text[:200],
+                )
                 return False
 
         return False

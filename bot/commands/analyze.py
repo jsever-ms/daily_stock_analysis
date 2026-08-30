@@ -82,7 +82,24 @@ class AnalyzeCommand(BotCommand):
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行分析命令"""
+        # [ANALYZE-DIAG] RECEIVED：已进入 /analyze 处理器（更早的消息接收日志见 [TG-DIAG]）
+        logger.info(
+            "[ANALYZE-DIAG] RECEIVED user_id=%s, args=%s",
+            message.user_id, args,
+        )
+
+        # ── 命令参数解析 ──
+        if not args or not (args[0] or "").strip():
+            logger.error("[ANALYZE-DIAG] FAILED stage=ARGS_PARSE reason=empty_args")
+            return BotResponse.text_response("❌ 深度分析任务提交失败 阶段：命令解析 请稍后重试")
+
         code = resolve_index_stock_code_for_analysis(args[0])
+        if not code:
+            logger.error(
+                "[ANALYZE-DIAG] FAILED stage=STOCK_RESOLVE stock_arg=%r", args[0],
+            )
+            return BotResponse.text_response("❌ 深度分析任务提交失败 阶段：股票解析 请稍后重试")
+        logger.info("[ANALYZE-DIAG] COMMAND_MATCHED stock_code=%s", code)
 
         # 默认详细模式；显式 brief 走精简
         is_brief = len(args) > 1 and args[1].lower() in ("brief", "简单", "精简")
@@ -90,8 +107,10 @@ class AnalyzeCommand(BotCommand):
 
         # 解析股票名称
         stock_label = resolve_stock_label(code)
-
-        logger.info(f"[AnalyzeCommand] 分析股票: {stock_label}, 报告类型: {report_type}")
+        logger.info(
+            "[ANALYZE-DIAG] STOCK_RESOLVED stock_code=%s, label=%s, report_type=%s",
+            code, stock_label, report_type,
+        )
 
         try:
             # 调用分析服务
@@ -101,15 +120,22 @@ class AnalyzeCommand(BotCommand):
             service = get_task_service()
 
             # 提交异步分析任务
+            logger.info(
+                "[ANALYZE-DIAG] TASK_SUBMIT_START stock_code=%s, report_type=%s",
+                code, report_type,
+            )
             result = service.submit_analysis(
                 code=code,
                 report_type=ReportType.from_str(report_type),
                 source_message=message
             )
+            task_id = str(result.get("task_id") or "")
+            logger.info(
+                "[ANALYZE-DIAG] TASK_SUBMIT_SUCCESS stock_code=%s, task_id=%s",
+                code, task_id,
+            )
 
             if result.get("success"):
-                task_id = result.get("task_id", "")
-
                 if is_brief:
                     return BotResponse.markdown_response(
                         f"✅ **分析任务已提交**\n\n"
@@ -129,8 +155,19 @@ class AnalyzeCommand(BotCommand):
                 )
             else:
                 error = result.get("error", "未知错误")
-                return BotResponse.error_response(f"提交分析任务失败: {error}")
+                logger.error(
+                    "[ANALYZE-DIAG] FAILED stage=TASK_SUBMIT stock_code=%s, result_error=%s",
+                    code, str(error)[:200],
+                )
+                return BotResponse.text_response(
+                    "❌ 深度分析任务提交失败 阶段：任务提交 请稍后重试"
+                )
 
         except Exception as e:
-            logger.error(f"[AnalyzeCommand] 执行失败: {e}")
-            return BotResponse.error_response(f"分析失败: {str(e)[:100]}")
+            logger.error(
+                "[ANALYZE-DIAG] FAILED stage=TASK_SUBMIT stock_code=%s, exception=%s, msg=%s",
+                code, type(e).__name__, str(e)[:200],
+            )
+            return BotResponse.text_response(
+                "❌ 深度分析任务提交失败 阶段：任务提交 请稍后重试"
+            )

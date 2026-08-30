@@ -333,15 +333,31 @@ class TelegramPollingClient:
             message.message_id, len(response.text), response.text[:80],
         )
 
+        # chat_id 只允许脱敏显示（最后 4 位），禁止打印完整 chat_id 与 Bot Token
+        raw_chat_id = str(message.chat_id or "")
+        chat_id_safe = f"***{raw_chat_id[-4:]}" if len(raw_chat_id) > 4 else "***"
+
         sender = self._get_sender()
+        logger.info(
+            "[ANALYZE-DIAG] ACK_SEND_START msg_id=%s, chat_id=%s, response_len=%d",
+            message.message_id, chat_id_safe, len(response.text),
+        )
         try:
             await asyncio.to_thread(
                 sender.send_to_telegram,
                 response.text,
                 chat_id=message.chat_id,
             )
+            logger.info(
+                "[ANALYZE-DIAG] ACK_SEND_SUCCESS msg_id=%s, chat_id=%s",
+                message.message_id, chat_id_safe,
+            )
         except Exception as exc:
-            logger.error("[TelegramPolling] 回复消息失败: %s", exc)
+            logger.error(
+                "[ANALYZE-DIAG] FAILED stage=ACK_SEND msg_id=%s, chat_id=%s, "
+                "exception=%s, msg=%s",
+                message.message_id, chat_id_safe, type(exc).__name__, str(exc)[:200],
+            )
 
     # ------------------------------------------------------------------ #
     #  后台轮询循环                                                       #
@@ -466,12 +482,19 @@ def start_telegram_polling_background() -> bool:
     _polling_thread = thread
     thread.start()
 
-    # [TG-DIAG] 进程启动即自报代码版本与代码路径，用于核对部署进程加载的代码
-    from bot.runtime_info import get_runtime_revision
+    # [TG-DIAG] 进程启动即自报代码版本、代码路径、PID、启动时间与部署环境，
+    # 用于核对"实际处理 Telegram 消息的进程到底跑的是哪一版代码"
+    from bot.runtime_info import (
+        get_deployment_env,
+        get_process_startup_time,
+        get_runtime_revision,
+    )
     import os as _os
     logger.info(
-        "[TG-DIAG] Telegram 轮询在后台线程启动: 代码版本=%s, 代码路径=%s",
+        "[TG-DIAG] Telegram 轮询在后台线程启动: 代码版本=%s, 代码路径=%s, "
+        "pid=%d, 启动时间=%s, 部署环境=%s",
         get_runtime_revision(), _os.path.abspath(__file__),
+        _os.getpid(), get_process_startup_time(), get_deployment_env(),
     )
     atexit.register(stop_telegram_polling)
     return True

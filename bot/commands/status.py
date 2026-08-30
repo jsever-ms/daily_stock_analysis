@@ -81,6 +81,17 @@ class StatusCommand(BotCommand):
         status["runtime_revision"] = self._collect_runtime_revision()
         status["runtime_commands"], status["runtime_command_count"] = self._collect_registered_commands()
         status["telegram_polling_running"] = self._collect_telegram_polling_state()
+
+        # 运行版本诊断：进程 PID / 启动时间 / 部署环境，用于确认"实际处理消息的进程"
+        import os as _os
+        status["process_pid"] = _os.getpid()
+        try:
+            from bot.runtime_info import get_deployment_env, get_process_startup_time
+            status["deployment_env"] = get_deployment_env()
+            status["startup_time"] = get_process_startup_time()
+        except Exception as exc:  # pragma: no cover - 防御性兜底
+            status["deployment_env"] = "unknown"
+            status["startup_time"] = f"获取失败: {exc}"
         
         # AI 配置状态
         llm_channels = getattr(config, "llm_channels", []) or []
@@ -249,6 +260,9 @@ class StatusCommand(BotCommand):
             "",
             "**🧭 运行信息**",
             f"• 代码版本: {status.get('runtime_revision', 'unknown')}",
+            f"• 进程 PID: {status.get('process_pid', '-')}",
+            f"• 启动时间: {status.get('startup_time', 'unknown')}",
+            f"• 部署环境: {status.get('deployment_env', 'unknown')}",
             f"• 已注册命令({status.get('runtime_command_count', 0)}): {status.get('runtime_commands', '-')}",
             f"• Telegram 轮询: {'✅ 运行中' if status.get('telegram_polling_running') else '❌ 未运行'}",
             "",
