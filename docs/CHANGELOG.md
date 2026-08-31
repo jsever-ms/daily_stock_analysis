@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] Telegram 发送层诊断：`[TelegramSender] SEND_COMPLETE` / `SEND_FAILED` 记录脱敏 chat_id（仅最后 4 位）、sendMessage HTTP status、Telegram ok、error description、elapsed；禁止打印完整 chat_id 与 Bot Token
 - [改进] `/analyze` 增加用户可见失败兜底：命令解析/股票解析/任务提交失败时回复「❌ 深度分析任务提交失败 阶段：xxx 请稍后重试」；后台深度分析失败时向发起用户回复「❌ 深度分析失败 股票：xxx 失败阶段：xxx」，不暴露 traceback/API Key/内部 Secret
 - [改进] 运行版本诊断：进程启动日志（Telegram 轮询启动）与 `/status detail` 增加 git commit、Railway 部署/环境、Python 进程 PID、启动时间，便于实机核对实际处理消息的进程代码版本
+- [改进] `/ask` 最终 summary 的 `LLM_CALL_START` 增加 ASK_FAST_MODEL / resolved_model / provider / channel / api_key_found(仅布尔) / model_registered / configured_model_count / call_start；resolved model 未注册时打印 `MODEL_NOT_REGISTERED`，未解析到 API key 时打印 `API_KEY_NOT_RESOLVED`；`LLM_CALL_SUCCESS/FAILED/PARSE_FAILED` 补齐 ask_fast_model 与 call_start；API key 仅打印 true/false，绝不打印完整值
 
 - [改进] Fast Pipeline 工具级性能诊断：新增 `_run_tool_safe` 函数，对每个数据源工具（quote/history/trend/news）分别记录耗时、成功/失败/exception，单行诊断日志输出；各工具设置独立 8s 超时，失败立即降级，不允许单工具阻塞 40~50s
 - [改进] Fast Pipeline 本地技术计算：trend 分析复用已获取的 K 线数据在本地用 pandas + StockTrendAnalyzer 计算 MA/MACD/RSI/量价，消除重复网络请求（原 `_handle_analyze_trend` 内部重新拉取 60 日历史数据是 49.4s 瓶颈根因）；数据不足 20 条时回退远端 trend 工具

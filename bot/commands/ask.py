@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from bot.commands.base import BotCommand, CATEGORY_AI
@@ -66,6 +67,53 @@ _FAST_PIPELINE_TOOL_TIMEOUT_S = 8.0    # 单个工具超时（快速降级）
 _FAST_PIPELINE_NEWS_TIMEOUT_S = 10.0   # 情报增强数据超时
 _FAST_PIPELINE_LLM_TIMEOUT_S = 45.0    # 最终 LLM 调用超时
 _FAST_PIPELINE_TOTAL_TIMEOUT_S = 90.0  # 快速问股总超时兜底
+
+
+def _fast_pipeline_llm_diag(config, resolved_model: str) -> Dict[str, Any]:
+    """构建 /ask 最终 summary 的只读诊断信息（仅布尔/字符串，绝不返回 API Key/Secret）。
+
+    用于定位"AI摘要生成失败"的真实原因；不改变任何调用逻辑、模型选择或报告格式。
+    关键判定：
+    - ``model_registered``：resolved model 是否出现在当前 channel/路由 model list 中，
+      否则首次调用就会因模型未注册而失败（对应 MODEL_NOT_REGISTERED）。
+    - ``api_key_found``：携带该 model 的 channel 是否有可用 API key（或 legacy 直连 key）。
+    """
+    diag: Dict[str, Any] = {
+        "ask_fast_model": getattr(config, "ask_fast_model", "") or "",
+        "resolved_model": resolved_model or "",
+        "provider": "",
+        "channels": [],
+        "api_key_found": False,
+        "model_registered": False,
+        "configured_count": 0,
+    }
+    try:
+        if "/" in (resolved_model or ""):
+            diag["provider"] = resolved_model.split("/", 1)[0]
+        from src.config import get_api_keys_for_model, get_configured_llm_models
+
+        configured_models = get_configured_llm_models(
+            getattr(config, "llm_model_list", []) or []
+        )
+        diag["configured_count"] = len(configured_models)
+        diag["model_registered"] = bool(resolved_model) and resolved_model in set(configured_models)
+
+        # channel 模式：携带 resolved_model 的 channel 是否有 key
+        for ch in getattr(config, "llm_channels", []) or []:
+            models = list(ch.get("models") or [])
+            if resolved_model not in models:
+                continue
+            ch_name = str(ch.get("name") or "?")
+            if ch_name not in diag["channels"]:
+                diag["channels"].append(ch_name)
+            if any(k for k in (ch.get("api_keys") or []) if k):
+                diag["api_key_found"] = True
+        # legacy 直连模式兜底（provider 环境 key）
+        if get_api_keys_for_model(resolved_model or "", config):
+            diag["api_key_found"] = True
+    except Exception as exc:  # 诊断本身失败不应影响主流程
+        diag["diag_error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+    return diag
 
 
 class _ProgressRefresher:
@@ -944,6 +992,10 @@ class AskCommand(BotCommand):
         llm_result = None
         llm_error_category = None
         llm_elapsed = 0.0
+        primary_model = ""
+        primary_provider = ""
+        diagnostic = {}
+        call_start_ts = ""
         try:
             from src.agent.llm_adapter import LLMToolAdapter
 
@@ -968,11 +1020,36 @@ class AskCommand(BotCommand):
                 else (primary_model.split("/")[0] if "/" in primary_model else primary_model)
             )
 
+            # 只读诊断：resolved model / provider / channel / api key / 注册情况
+            diagnostic = _fast_pipeline_llm_diag(pipeline_config, primary_model)
+            call_start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(
-                "[FastPipeline] LLM_CALL_START stock_code=%s, model=%s, provider=%s, "
-                "timeout=%.1fs",
-                code, primary_model, primary_provider, _FAST_PIPELINE_LLM_TIMEOUT_S,
+                "[FastPipeline] LLM_CALL_START stock_code=%s, ask_fast_model=%s, "
+                "resolved_model=%s, provider=%s, channels=%s, api_key_found=%s, "
+                "model_registered=%s, configured_model_count=%d, timeout=%.1fs, "
+                "call_start=%s",
+                code,
+                diagnostic.get("ask_fast_model", ""),
+                primary_model,
+                primary_provider,
+                ",".join(diagnostic.get("channels", [])) or "-",
+                diagnostic.get("api_key_found", False),
+                diagnostic.get("model_registered", False),
+                diagnostic.get("configured_count", 0),
+                _FAST_PIPELINE_LLM_TIMEOUT_S,
+                call_start_ts,
             )
+            if not diagnostic.get("model_registered"):
+                logger.error(
+                    "[FastPipeline] MODEL_NOT_REGISTERED stock_code=%s, model=%s, "
+                    "configured_model_count=%d",
+                    code, primary_model, diagnostic.get("configured_count", 0),
+                )
+            if not diagnostic.get("api_key_found"):
+                logger.error(
+                    "[FastPipeline] API_KEY_NOT_RESOLVED stock_code=%s, model=%s",
+                    code, primary_model,
+                )
             llm_response = adapter.call_text(
                 messages=[{"role": "user", "content": llm_prompt}],
                 temperature=0.3,
@@ -986,27 +1063,33 @@ class AskCommand(BotCommand):
                 error_type = getattr(llm_response, "error_type", None) or "PROVIDER_ERROR"
                 http_status = getattr(llm_response, "http_status", None)
                 logger.error(
-                    "[FastPipeline] LLM_CALL_FAILED stock_code=%s, model=%s, provider=%s, "
-                    "error_type=%s, http_status=%s, elapsed=%.1fs, msg=%s",
-                    code, llm_response.model, llm_response.provider, error_type,
-                    http_status, llm_elapsed, str(llm_response.content or "")[:200],
+                    "[FastPipeline] LLM_CALL_FAILED stock_code=%s, ask_fast_model=%s, "
+                    "model=%s, provider=%s, error_type=%s, http_status=%s, "
+                    "elapsed=%.1fs, call_start=%s, msg=%s",
+                    code, diagnostic.get("ask_fast_model", ""),
+                    llm_response.model, llm_response.provider, error_type,
+                    http_status, llm_elapsed, call_start_ts,
+                    str(llm_response.content or "")[:200],
                 )
             elif llm_response.content and len(llm_response.content.strip()) > 50:
                 llm_result = llm_response.content.strip()
                 logger.info(
-                    "[FastPipeline] LLM_CALL_SUCCESS stock_code=%s, model=%s, provider=%s, "
-                    "elapsed=%.1fs, content_len=%d",
-                    code, llm_response.model, llm_response.provider, llm_elapsed,
-                    len(llm_response.content),
+                    "[FastPipeline] LLM_CALL_SUCCESS stock_code=%s, ask_fast_model=%s, "
+                    "model=%s, provider=%s, elapsed=%.1fs, call_start=%s, content_len=%d",
+                    code, diagnostic.get("ask_fast_model", ""),
+                    llm_response.model, llm_response.provider, llm_elapsed,
+                    call_start_ts, len(llm_response.content),
                 )
             else:
                 llm_error_category = "LLM_RESPONSE_PARSE_FAILED"
                 content_preview = (llm_response.content or "")[:200]
                 logger.error(
-                    "[FastPipeline] LLM_RESPONSE_PARSE_FAILED stock_code=%s, model=%s, "
-                    "provider=%s, elapsed=%.1fs, content_len=%d, preview=%r",
-                    code, llm_response.model, llm_response.provider, llm_elapsed,
-                    len(llm_response.content or ""), content_preview,
+                    "[FastPipeline] LLM_RESPONSE_PARSE_FAILED stock_code=%s, "
+                    "ask_fast_model=%s, model=%s, provider=%s, elapsed=%.1fs, "
+                    "call_start=%s, content_len=%d, preview=%r",
+                    code, diagnostic.get("ask_fast_model", ""),
+                    llm_response.model, llm_response.provider, llm_elapsed,
+                    call_start_ts, len(llm_response.content or ""), content_preview,
                 )
         except Exception as exc:
             from src.agent.llm_adapter import classify_llm_exception
@@ -1015,10 +1098,12 @@ class AskCommand(BotCommand):
             error_type, http_status = classify_llm_exception(exc)
             llm_elapsed = time.monotonic() - t_llm_start
             logger.error(
-                "[FastPipeline] LLM_CALL_FAILED stock_code=%s, error_type=%s, http_status=%s, "
-                "elapsed=%.1fs, exception=%s, msg=%s",
-                code, error_type, http_status, llm_elapsed, type(exc).__name__,
-                str(exc)[:200],
+                "[FastPipeline] LLM_CALL_FAILED stock_code=%s, ask_fast_model=%s, "
+                "resolved_model=%s, provider=%s, error_type=%s, http_status=%s, "
+                "elapsed=%.1fs, call_start=%s, exception=%s, msg=%s",
+                code, diagnostic.get("ask_fast_model", ""),
+                primary_model, primary_provider, error_type, http_status,
+                llm_elapsed, call_start_ts, type(exc).__name__, str(exc)[:200],
             )
 
         t_llm = time.monotonic() - t_llm_start

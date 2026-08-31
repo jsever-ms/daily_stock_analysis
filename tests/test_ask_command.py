@@ -365,5 +365,66 @@ class TestAskCommandSilentExceptionFix(unittest.TestCase):
         self.assertTrue(any("_get_default_skill_id failed" in line for line in cm.output))
 
 
+class TestFastPipelineLlmDiag(unittest.TestCase):
+    """Verify the /ask final-summary LLM diagnostic helper (read-only)."""
+
+    @staticmethod
+    def _config(
+        *,
+        models: list,
+        channels: list,
+        ask_fast_model: str = "gemini/gemini-3-flash-preview",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            ask_fast_model=ask_fast_model,
+            llm_model_list=[{"model_name": m, "litellm_params": {"model": m}} for m in models],
+            llm_channels=channels,
+        )
+
+    def test_registered_model_with_key(self) -> None:
+        from bot.commands.ask import _fast_pipeline_llm_diag
+
+        model = "gemini/gemini-3-flash-preview"
+        config = self._config(
+            models=[model, "gemini/gemini-2.5-flash"],
+            channels=[{"name": "gemini", "models": [model], "api_keys": ["k" * 10]}],
+        )
+        diag = _fast_pipeline_llm_diag(config, model)
+        self.assertTrue(diag["model_registered"])
+        self.assertTrue(diag["api_key_found"])
+        self.assertEqual(diag["channels"], ["gemini"])
+        self.assertEqual(diag["provider"], "gemini")
+        self.assertEqual(diag["ask_fast_model"], model)
+        self.assertEqual(diag["configured_count"], 2)
+
+    def test_unregistered_model_flags_not_registered_and_no_key(self) -> None:
+        from bot.commands.ask import _fast_pipeline_llm_diag
+
+        # ASK_FAST_MODEL 指向 gemini channel，但其 models 只配置了 gemini-2.5-flash
+        requested = "gemini/gemini-3-flash-preview"
+        configured = "gemini/gemini-2.5-flash"
+        config = self._config(
+            models=[configured],
+            channels=[{"name": "gemini", "models": [configured], "api_keys": ["k" * 10]}],
+            ask_fast_model=requested,
+        )
+        diag = _fast_pipeline_llm_diag(config, requested)
+        self.assertFalse(diag["model_registered"])
+        self.assertFalse(diag["api_key_found"])
+        self.assertEqual(diag["configured_count"], 1)
+
+    def test_no_key_in_any_channel(self) -> None:
+        from bot.commands.ask import _fast_pipeline_llm_diag
+
+        model = "gemini/gemini-3-flash-preview"
+        config = self._config(
+            models=[model],
+            channels=[{"name": "gemini", "models": [model], "api_keys": []}],
+        )
+        diag = _fast_pipeline_llm_diag(config, model)
+        self.assertTrue(diag["model_registered"])
+        self.assertFalse(diag["api_key_found"])
+
+
 if __name__ == "__main__":
     unittest.main()
