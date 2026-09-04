@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -26,8 +28,6 @@ jobs:
         with:
           filters: |
             backend_web_contract:
-              # Public assets are shared runtime inputs: Python loaders and
-              # packaged deployments may consume them outside the Web app.
               - 'apps/dsa-web/public/**'
               - 'apps/dsa-web/src/components/settings/llmProviderTemplates.ts'
               - 'apps/dsa-web/src/locales/settingsHelp.ts'
