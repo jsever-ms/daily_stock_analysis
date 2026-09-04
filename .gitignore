@@ -17,6 +17,9 @@
 /litellm_config.yaml
 /litellm_config.*.yaml
 
+# AI/IDE 临时分享产物（不应进入版本控制）
+/.trae-html-share-packages/
+
 # Python
 __pycache__/
 *.py[cod]
